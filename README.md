@@ -55,6 +55,45 @@ python -m pwpipe approve candidates.csv          # rows with approve=y join the 
 passed. Review reasons: `suspect`, `conflict`, `drop_page`, `low_text`,
 `rotated_page`, `all_pages_ad`, `verify_failed`.
 
+## State database (`db.py`, `state.py`)
+
+Every paper's progress lives in the Turso database `paperwala-pipeline`
+(Mumbai), reached over Turso's HTTP API with urllib - no libsql driver, so it
+works on Windows and Linux alike. Tests use a local SQLite file with the same
+SQL, and also run against the separate `paperwala-pipeline-test` database
+when `PIPELINE_TEST_DB_URL` is set (CI sets it).
+
+```
+python -m pwpipe migrate
+python -m pwpipe seed ../mpboardonline.com-catalog/mpboardonline.com-catalog --catalog mpboardonline.com
+python -m pwpipe status
+```
+
+A paper's `stage` is the last step it completed
+(`discovered → downloaded → processed → staged → approved → published →
+live_verified`); `status` is `ready`, `leased`, `review`, `dead` or `done`.
+
+- **Claim** is one `UPDATE … RETURNING`, so two jobs never get the same paper.
+- **Leases expire** (30 min, renewable). A job that dies stops renewing and
+  its papers are reclaimed - and that counts as an attempt, so a PDF that
+  crashes the worker ends `dead` after 5 tries instead of looping.
+- **Writes are fenced** on stage + lease owner: a job whose lease was taken
+  over cannot overwrite the newer result.
+- **Retries are safe**: a repeated `advance` whose first try committed is
+  recognized and reported as success.
+- **Failures back off** 1 min → 5 min → 30 min → 2 h, then `dead`.
+- **Every transition** is written to `events` in the same transaction.
+- **Re-seeding** refreshes catalog fields only; it never resets progress.
+
+Seeded 2026-10-28: 37,902 papers from 13 sources (7.1 GB, 77 byte-identical
+duplicates). `RGPV-BTech-Catalog` has no Drive ids in any of its 3,130 rows
+and contributes nothing.
+
+Credentials live in WSL `~/.turso-env-pipeline` (mode 600): the pipeline URL,
+a token for GitHub Actions, a separate token for Render (revocable on its
+own), and the test database's URL and token. The repo secrets
+`PIPELINE_DB_URL/TOKEN` and `PIPELINE_TEST_DB_URL/TOKEN` hold the same values.
+
 ## The blocklist
 
 `blocklists/seed.json` is data, versioned by content hash; every report records

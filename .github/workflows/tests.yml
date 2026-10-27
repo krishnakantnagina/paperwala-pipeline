@@ -32,4 +32,9 @@ jobs:
       - name: Fetch pinned OCR models
         run: python scripts/fetch_tessdata.py
       - name: Run tests
-        run: python -m pytest tests -q
+        # The state tests also run against the throwaway -test Turso database
+        # (they wipe it; the fixture refuses any URL without "-test-").
+        env:
+          PIPELINE_TEST_DB_URL: ${{ secrets.PIPELINE_TEST_DB_URL }}
+          PIPELINE_TEST_DB_TOKEN: ${{ secrets.PIPELINE_TEST_DB_TOKEN }}
+        run: python -m pytest tests -q -rs
