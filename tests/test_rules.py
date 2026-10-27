@@ -88,3 +88,18 @@ def test_blocklist_version_tracks_content(bl):
 def test_non_tsv_output_is_an_error_not_zero_words():
     with pytest.raises(OcrError):
         parse_tsv("some plain text output\n")
+
+
+@pytest.mark.parametrize("text", [
+    "Tea, coffee etc. in the morning", "Answer as per M.P. in brief", "Collect. In which year",
+    "features. India is a country",
+])
+def test_prose_with_dots_is_not_a_domain(bl, text):
+    assert classify_line(text, bl)[0] not in (AD, SUSPECT)
+
+
+@pytest.mark.parametrize("text", [
+    "a2zSUBJCTS.COM Biology", "Visit www. someothersite .com", "http://www.a2zSubjects.com",
+])
+def test_written_out_unknown_domain_is_still_suspect(bl, text):
+    assert classify_line(text, bl)[0] == SUSPECT

@@ -58,9 +58,22 @@ def find_phones(text: str) -> list[str]:
     return _PHONE_RE.findall(collapsed)
 
 
-def find_domains(text: str) -> list[str]:
-    lowered = re.sub(r"\s*\.\s*(?=[a-z])", ".", text.lower())
-    return [m.group(1).removeprefix("www.") for m in _DOMAIN_RE.finditer(lowered)]
+def find_domains(text: str, explicit_only: bool = False) -> list[str]:
+    """Domains in a line. OCR splits URLs ("www. pyqonline .com"), so dots
+    are rejoined across spaces - but that also turns prose into domains
+    ("etc. in the" -> etc.in, "M.P. in" -> m.p.in; 12 false suspects in the
+    second pilot). ``explicit_only`` keeps a domain only when it is written
+    as one: after www/http, or with no space around its dots."""
+    lowered = text.lower()
+    joined = re.sub(r"\s*\.\s*(?=[a-z])", ".", lowered)
+    out = []
+    for m in _DOMAIN_RE.finditer(joined):
+        domain = m.group(1).removeprefix("www.")
+        if explicit_only and not (m.group(0).startswith(("http", "www")) or
+                                  m.group(1).startswith("www.") or domain in lowered):
+            continue
+        out.append(domain)
+    return out
 
 
 def _domain_label(domain: str) -> str:
@@ -91,7 +104,7 @@ def classify_line(text: str, bl: Blocklist) -> tuple[str | None, str]:
     if phones and keyword:
         return AD, f"phone+keyword:{keyword}"
 
-    unknown = [d for d in find_domains(text)
+    unknown = [d for d in find_domains(text, explicit_only=True)
                if not any(d == s.lstrip(".") or d.endswith(s) for s in bl.allow_domain_suffixes)]
     if unknown:
         return SUSPECT, f"domain?:{unknown[0]}"
