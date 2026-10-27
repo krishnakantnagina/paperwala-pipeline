@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import sqlite3
 import time
 import urllib.error
@@ -97,8 +98,11 @@ def _decode_value(v: dict) -> Any:
 def _stmt(sql: str, params: Params) -> dict:
     stmt: dict = {"sql": sql}
     if params:
+        # Turso rejects a named argument the statement does not use (SQLite
+        # ignores it), so send only the ones referenced.
+        used = set(re.findall(r":([A-Za-z_][A-Za-z0-9_]*)", sql))
         stmt["named_args"] = [{"name": f":{k}", "value": _encode_value(v)}
-                              for k, v in params.items()]
+                              for k, v in params.items() if k in used]
     return stmt
 
 

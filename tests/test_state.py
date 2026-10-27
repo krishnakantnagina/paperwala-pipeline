@@ -117,8 +117,8 @@ def test_claims_never_overlap(seeded, clock):
 def test_stale_worker_cannot_overwrite(seeded, clock):
     paper = state.claim(seeded, "discovered", "A", 1)[0]
     expire_leases(seeded, clock)
-    retaken = state.claim(seeded, "discovered", "B", 1)[0]
-    assert retaken["drive_id"] == paper["drive_id"]
+    retaken = next(p for p in state.claim(seeded, "discovered", "B", 10)
+                   if p["drive_id"] == paper["drive_id"])
     assert retaken["attempts"] == 1          # the dead lease used an attempt
     assert not state.advance(seeded, paper, "A", "downloaded", source_sha256="stale")
     assert state.advance(seeded, retaken, "B", "downloaded", source_sha256="fresh")
@@ -196,3 +196,19 @@ def test_bad_transitions_rejected(seeded, clock):
         state.advance(seeded, paper, "A", "downloaded", status="leased")
     with pytest.raises(ValueError):
         state.advance(seeded, paper, "A", "downloaded", stage="published")
+
+
+def test_requeue_resets_only_matching_papers(seeded, clock):
+    a, b = state.claim(seeded, "discovered", "A", 2)
+    assert state.advance(seeded, a, "A", "staged", status="review", output_file_id="f1")
+    assert state.advance(seeded, b, "A", "approved", status="ready")
+    assert state.requeue(seeded, "t", "new rules", catalog="mpboardonline.com") == 1
+    ra, rb = state.get(seeded, a["drive_id"]), state.get(seeded, b["drive_id"])
+    assert (ra["stage"], ra["status"], ra["attempts"]) == ("discovered", "ready", 0)
+    assert ra["output_file_id"] == "f1"          # kept, so the old copy can be replaced
+    assert rb["stage"] == "approved"
+    ev = seeded.execute("SELECT * FROM events WHERE drive_id = :d AND detail = 'new rules'",
+                        {"d": a["drive_id"]})
+    assert len(ev) == 1
+    with pytest.raises(ValueError):
+        state.requeue(seeded, "t", "x", stages=("published",))

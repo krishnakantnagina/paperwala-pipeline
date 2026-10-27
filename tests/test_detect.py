@@ -59,12 +59,31 @@ def test_ad_touching_question_is_conflict_not_erased(bl):
     assert plan.applied_regions == []
 
 
-def test_question_containing_url_is_not_erased(bl):
-    long_q = line("Q7. Read the passage published at www.pyqonline.com and answer the "
-                  "following questions about photosynthesis in detail", 900, bl=bl)
-    plan = plan_page(PAGE, SIZE, questions(bl) + [long_q], bl)
-    assert plan.applied_regions == []
-    assert "conflict" in plan.review
+def test_url_stamped_beside_question_erases_only_url_words(bl):
+    # The pilot case: "sound wave of frequency 20 Hz. https://www.mpboardonline.com"
+    q = line("Q7. A sound wave of frequency 20 Hz travels through air at room "
+             "temperature https://www.mpboardonline.com", 1000, bl=bl)
+    plan = plan_page(PAGE, SIZE, questions(bl) + [q], bl)
+    assert [r.kind for r in plan.applied_regions] == ["words"]
+    assert plan.applied_regions[0].lines == ["https://www.mpboardonline.com"]
+    kept = [t for t, _, b in q.words if not plan.erased(b)]
+    assert "Q7." in kept and "temperature" in kept and len(kept) == len(q.words) - 1
+    assert "conflict" not in plan.review
+
+
+def test_url_words_touching_another_line_go_to_review(bl):
+    # Overlapping the question above (it spans y 860-900): refused.
+    q = line("Q7. Read the passage published at www.pyqonline.com and answer the "
+             "following questions about photosynthesis in detail", 880, bl=bl)
+    plan = plan_page(PAGE, SIZE, questions(bl) + [q], bl)
+    assert plan.applied_regions == [] and "conflict" in plan.review
+
+
+def test_long_line_with_phone_is_never_narrowed(bl):
+    q = line("Q7. For help with this chapter call our WhatsApp helpline 9300930012 any "
+             "time and explain the process of photosynthesis", 1000, bl=bl)
+    plan = plan_page(PAGE, SIZE, questions(bl) + [q], bl)
+    assert plan.applied_regions == [] and "conflict" in plan.review
 
 
 def test_page_of_only_ads_is_dropped_with_review(bl):
@@ -85,3 +104,30 @@ def test_blank_page_goes_to_review(bl):
 def test_clean_paper_needs_nothing(bl):
     plan = plan_page(PAGE, SIZE, questions(bl), bl)
     assert plan.regions == [] and plan.review == []
+
+
+def test_erased_content_catches_a_plan_that_erases_a_question(bl):
+    from pwpipe.detect import Region
+    from pwpipe.rules import _domain_label
+    from pwpipe.verify import erased_content
+
+    labels = [_domain_label(d) for d in bl.domains]
+    qs = questions(bl)
+    plan = plan_page(PAGE, SIZE, qs + ad_block(bl), bl)
+    assert erased_content(plan, labels) == []          # the real ad block is all ad
+
+    plan.regions.append(Region(bbox=qs[3].bbox, lines=[qs[3].text], reasons=["bug"]))
+    assert "Explain" in erased_content(plan, labels)
+
+
+def test_erased_content_catches_whole_url_line_erasure(bl):
+    from pwpipe.detect import Region
+    from pwpipe.rules import _domain_label
+    from pwpipe.verify import erased_content
+
+    labels = [_domain_label(d) for d in bl.domains]
+    q = line("bee loud glade. https:/www.mpboardonline", 1000, bl=bl)
+    plan = plan_page(PAGE, SIZE, questions(bl) + [q], bl)
+    assert erased_content(plan, labels) == []          # only the URL word is erased
+    plan.regions = [Region(bbox=q.bbox, lines=[q.text], reasons=["old behaviour"])]
+    assert set(erased_content(plan, labels)) >= {"bee", "loud"}

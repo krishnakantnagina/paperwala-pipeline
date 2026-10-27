@@ -179,8 +179,9 @@ def pixmap_to_image(pix: pymupdf.Pixmap) -> Image.Image:
     return Image.frombytes(mode, (pix.width, pix.height), pix.samples)
 
 
-def raster_page(doc: pymupdf.Document, info: PageInfo, dpi: int = RENDER_DPI) -> Raster:
-    if info.is_scan:
+def raster_page(doc: pymupdf.Document, info: PageInfo, dpi: int = RENDER_DPI,
+                force_render: bool = False) -> Raster:
+    if info.is_scan and not force_render:
         img = pixmap_to_image(pymupdf.Pixmap(doc, info.scan_xref))
         x0, y0, x1, y1 = info.scan_rect
         return Raster(img, (x0, y0), ((x1 - x0) / img.width, (y1 - y0) / img.height), True)

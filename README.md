@@ -114,4 +114,25 @@ ten digits starting 6-9, so codes, roll numbers and years never match.
   compressed twice.
 - OCR word counts are not proof: erasing a block changes Tesseract's layout,
   so a few words elsewhere re-read differently (7 of 121). The pixel check is
-  the proof; retention is the backstop.
+  the proof; retention is the backstop - and on lossless pages that already
+  passed the pixel check it is only a note.
+
+### From the 50-paper MP Board pilot (2026-10-28, v0.1.0 → v0.2.0)
+
+- **The source sites stamp their URL in the margin of every page**, and OCR
+  reads it as one line with the question beside it ("sound wave of frequency
+  20 Hz. https://www.mpboardonline.com"). Erasing whole lines took question
+  text with it ("bee loud glade.", "नाम लिखिए।"). A URL line now loses only its
+  URL words; the rest of the line is protected like any other text.
+- **One of those passed verification**, because the pixel check verifies the
+  cleaner against the plan. `verify.erased_content` now checks the plan
+  itself: every word inside an erased box must be ad material.
+- **`save(clean=True)` changed Word-made papers** (unembedded fonts): 0.9 % of
+  pixels moved. Removed; garbage + deflate change nothing.
+- **A redacted text page can come out looking like a scan**, so the verifier
+  read it as an image while the source was rendered. Both are now rendered.
+- **Turso rejects unused named SQL parameters** that SQLite ignores; `db._stmt`
+  sends only the ones a statement references.
+
+Result on the 10 papers that failed: 9 clean and verified, 1 correctly sent
+to review (its URL touches question text).

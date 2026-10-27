@@ -7,6 +7,8 @@
     python -m pwpipe seed CATALOG_DIR --catalog NAME [--db turso|PATH]
     python -m pwpipe status [--db turso|PATH]
     python -m pwpipe work [--catalog NAME] [--limit N] [--max-minutes M] [--review-all]
+    python -m pwpipe review-report [--catalog NAME] [--out DIR]
+    python -m pwpipe requeue --reason TEXT [--catalog NAME] [--stage S ...] [--status S ...]
 
 ``--db`` defaults to Turso via PIPELINE_DB_URL / PIPELINE_DB_TOKEN.
 """
@@ -105,6 +107,22 @@ def _work(args) -> int:
     return code
 
 
+def _review_report(args) -> int:
+    from .drive import DriveClient
+    from .review_report import build
+
+    index = build(connect(args.db), DriveClient.from_env(), Path(args.out), args.catalog)
+    print(f"review page: {index.resolve()}")
+    return 0
+
+
+def _requeue(args) -> int:
+    n = state.requeue(connect(args.db), "cli", args.reason, args.catalog,
+                      tuple(args.stage), tuple(args.status), args.ids or None)
+    print(f"requeued {n} papers")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="pwpipe")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -153,6 +171,21 @@ def main(argv: list[str] | None = None) -> int:
                    help="send every paper to review (the pilot)")
     w.add_argument("--blocklist", default=SEED_PATH)
     w.set_defaults(func=_work)
+
+    r = sub.add_parser("review-report", help="local HTML page of staged papers")
+    r.add_argument("--db")
+    r.add_argument("--catalog")
+    r.add_argument("--out", default="work/review")
+    r.set_defaults(func=_review_report)
+
+    q = sub.add_parser("requeue", help="send papers back to be cleaned again")
+    q.add_argument("--db")
+    q.add_argument("--catalog")
+    q.add_argument("--stage", nargs="+", default=["staged"])
+    q.add_argument("--status", nargs="+", default=["review"])
+    q.add_argument("--ids", nargs="*")
+    q.add_argument("--reason", required=True)
+    q.set_defaults(func=_requeue)
 
     args = ap.parse_args(argv)
     return args.func(args)

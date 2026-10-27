@@ -22,10 +22,11 @@ import numpy as np
 from PIL import Image
 
 from .blocklist import Blocklist
-from .detect import REAL_WORD_CONF, PagePlan, classify_lines
+from .detect import (REAL_WORD_CONF, PagePlan, _alnum, _tld_word, _url_word,
+                     classify_lines)
 from .ocr import DEFAULT_LANGS, group_lines, ocr_image
 from .pdf import PdfInfo, analyze, open_pdf, raster_page
-from .rules import AD, line_key
+from .rules import AD, SUSPECT, WEAK, _domain_label, line_key
 
 MIN_RETENTION = 0.85
 INK_DIFF = 48               # a pixel this much darker/lighter counts as changed
@@ -50,13 +51,12 @@ class VerifyResult:
         self.failures.append(msg)
 
 
-def _tokens(lines, skip=()) -> Counter:
-    skip_ids = {id(l) for l in skip}
+def _tokens(lines, plan: PagePlan | None = None) -> Counter:
     out: Counter = Counter()
     for line in lines:
-        if id(line) in skip_ids:
-            continue
-        for text, conf, _ in line.words:
+        for text, conf, box in line.words:
+            if plan is not None and plan.erased(box):
+                continue
             key = line_key(text)
             if conf >= REAL_WORD_CONF and sum(c.isalnum() for c in key) >= 2:
                 out[key] += 1
@@ -88,6 +88,28 @@ def _pixel_check(before: Image.Image, after: Image.Image, boxes, lossless: bool)
     return None
 
 
+def erased_content(plan: PagePlan, labels: list[str]) -> list[str]:
+    """Paper words the plan would erase. Must be empty.
+
+    Independent of how regions were built: every confident word inside an
+    applied box must itself be ad material - a URL word, or a word of a
+    line flagged as ad. This is the check that catches a plan erasing
+    "bee loud glade." along with the URL stamped next to it, which the pixel
+    check cannot see (it verifies the cleaner against the plan).
+    """
+    bad = []
+    for line in plan.lines:
+        for text, conf, box in line.words:
+            if conf < REAL_WORD_CONF or _alnum(text) < 2 or not plan.erased(box):
+                continue
+            if line.kind not in (AD, SUSPECT, WEAK):
+                bad.append(text)
+            elif line.reason.startswith("domain:") and not (
+                    _url_word(text, labels) or _tld_word(text)):
+                bad.append(text)
+    return bad
+
+
 def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: Blocklist,
            dst_path: str | Path, langs: str = DEFAULT_LANGS,
            keep_rasters_for: set[int] | None = None) -> VerifyResult:
@@ -109,6 +131,12 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
     elif ratio > 1.5:
         result.notes.append(f"output {ratio:.2f}x larger than source")
 
+    labels = [_domain_label(d) for d in bl.domains]
+    for plan in plans:
+        bad = erased_content(plan, labels)
+        if bad:
+            result.fail(f"page {plan.number}: plan erases paper text: {' '.join(bad)[:80]!r}")
+
     src_doc = open_pdf(src_path)
     dst_doc = open_pdf(dst_path)
     try:
@@ -118,8 +146,11 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
             if abs(dst_page.width - src_page.width) > 0.5 or \
                     abs(dst_page.height - src_page.height) > 0.5:
                 result.fail(f"page {plan.number}: size changed")
-            raster = raster_page(dst_doc, dst_page)
-            before = raster_page(src_doc, src_page)
+            # Read both pages the same way: a redacted text page can come out
+            # looking like a scan, and its image would not match the render.
+            render = plan.mode == "redact"
+            raster = raster_page(dst_doc, dst_page, force_render=render)
+            before = raster_page(src_doc, src_page, force_render=render)
             boxes = [r.bbox for r in plan.applied_regions]
             lossless = plan.mode == "rebuild" and "DCT" not in next(
                 i.filter for i in src_page.images if i.xref == src_page.scan_xref)
@@ -135,7 +166,7 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
                 result.fail(f"page {plan.number}: ad still present: {ads[0][:60]!r}")
             stat["ads_left"] = len(ads)
 
-            expected = _tokens(plan.lines, skip=plan.applied_lines())
+            expected = _tokens(plan.lines, plan)
             got = _tokens(lines)
             total = sum(expected.values())
             found = sum((expected & got).values())
@@ -144,9 +175,13 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
                 retention = found / total
                 stat["retention"] = round(retention, 4)
                 if retention < MIN_RETENTION:
-                    result.fail(f"page {plan.number}: retention {retention:.3f} < {MIN_RETENTION}")
+                    msg = f"page {plan.number}: retention {retention:.3f} < {MIN_RETENTION}"
+                    # Lossless and pixel-identical outside the boxes: the words
+                    # are provably there; OCR just re-read the layout.
+                    (result.notes.append if lossless and not problem else result.fail)(msg)
             elif total - found > MAX_ABS_LOSS:
-                result.fail(f"page {plan.number}: lost {total - found} of {total} words")
+                msg = f"page {plan.number}: lost {total - found} of {total} words"
+                (result.notes.append if lossless and not problem else result.fail)(msg)
             result.pages.append(stat)
             if keep_rasters_for and plan.number in keep_rasters_for:
                 result.rasters[plan.number] = raster.image

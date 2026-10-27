@@ -169,6 +169,20 @@ class DriveClient:
                "&fields=files(id,md5Checksum,size,appProperties,parents)&spaces=drive")
         return self._json("GET", url).get("files", [])
 
+    def list_folder(self, folder_id: str) -> list[dict]:
+        q = f"'{_q(folder_id)}' in parents and trashed = false"
+        files, token = [], ""
+        while True:
+            url = (f"{API}/files?q={urllib.parse.quote(q)}&pageSize=1000"
+                   f"&fields=nextPageToken,files(id,name,mimeType,size)&spaces=drive")
+            if token:
+                url += f"&pageToken={urllib.parse.quote(token)}"
+            page = self._json("GET", url)
+            files += page.get("files", [])
+            token = page.get("nextPageToken", "")
+            if not token:
+                return files
+
     # --- writes (only ever on files this app created: drive.file scope) ---
 
     def ensure_folder(self, parts: list[str], root: str = "root") -> str:
@@ -219,6 +233,11 @@ class DriveClient:
         if anyone_reader:
             # Same sharing as the originals: anyone with the link can view.
             self.share_anyone(file_id)
+        # A re-cleaned paper replaces its earlier copy rather than sitting
+        # beside it. Only after the new one is verified, so there is always one.
+        for stale in self.find_by_source(source_id):
+            if stale["id"] != file_id:
+                self.delete(stale["id"])
         return Uploaded(file_id, md5, len(data), reused=False)
 
     def share_anyone(self, file_id: str) -> None:

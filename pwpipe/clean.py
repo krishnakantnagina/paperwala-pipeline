@@ -131,7 +131,10 @@ def clean_pdf(src_path: str | Path, info: PdfInfo, plans: list[PagePlan], bl: Bl
         out.set_metadata({})
         out.del_xml_metadata()
         tmp = Path(str(dst_path) + ".part")
-        out.save(tmp, garbage=4, deflate=True, clean=True)
+        # No clean=True: it rewrites content streams, and on Word-made papers
+        # with unembedded fonts that shifted text (0.9% of pixels on a pilot
+        # paper). garbage + deflate alone change no pixel.
+        out.save(tmp, garbage=4, deflate=True)
     finally:
         out.close()
         src.close()

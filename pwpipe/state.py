@@ -309,6 +309,34 @@ def set_status(db: Db, drive_id: str, expect_stage: str, expect_status: str, sta
     return bool(rows)
 
 
+def requeue(db: Db, actor: str, reason: str, catalog: str | None = None,
+            stages: tuple[str, ...] = ("staged",), statuses: tuple[str, ...] = ("review",),
+            drive_ids: list[str] | None = None) -> int:
+    """Send papers back to the start to be cleaned again (new rules, or a
+    reviewer's "re-clean"). Never touches leased or published papers."""
+    if set(stages) & {"published", "live_verified"} or "leased" in statuses:
+        raise ValueError("published or leased papers cannot be requeued")
+    params: dict = {"t": now(), "c": catalog, "a": actor, "x": reason[:2000]}
+    marks_s = ", ".join(f":s{i}" for i in range(len(stages)))
+    marks_t = ", ".join(f":u{i}" for i in range(len(statuses)))
+    params.update({f"s{i}": v for i, v in enumerate(stages)})
+    params.update({f"u{i}": v for i, v in enumerate(statuses)})
+    where = f"stage IN ({marks_s}) AND status IN ({marks_t}) AND (:c IS NULL OR catalog = :c)"
+    if drive_ids:
+        where += " AND drive_id IN (" + ", ".join(f":d{i}" for i in range(len(drive_ids))) + ")"
+        params.update({f"d{i}": v for i, v in enumerate(drive_ids)})
+    rows = db.batch([
+        (f"""INSERT INTO events (drive_id, at, owner, from_stage, to_stage, status, detail)
+             SELECT drive_id, :t, :a, stage, 'discovered', 'ready', :x FROM papers
+             WHERE {where}""", params),
+        (f"""UPDATE papers SET stage = 'discovered', status = 'ready', attempts = 0,
+                              last_error = NULL, lease_owner = NULL, lease_until = NULL,
+                              updated_at = :t
+             WHERE {where} RETURNING drive_id""", params),
+    ])[1]
+    return len(rows)
+
+
 def get(db: Db, drive_id: str) -> dict | None:
     rows = db.execute("SELECT * FROM papers WHERE drive_id = :d", {"d": drive_id})
     return rows[0] if rows else None

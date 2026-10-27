@@ -9,17 +9,26 @@ the middle has no signal of its own but is sandwiched.
 The safety rule is absolute: a block is only applied if its box touches no
 word that is not part of the block. Otherwise it is recorded as a conflict
 and the paper goes to a human. Erasing a question is worse than leaving an ad.
+
+A URL line contributes only its URL *words* to a block, never the whole line.
+The source sites stamp "https://www.mpboardonline.com" at the right margin,
+and OCR reads it as one line with the question beside it. In the 50-paper
+pilot that was 10 papers; erasing whole lines took question text with it
+("bee loud glade.", "नाम लिखिए।") - and one of those even passed
+verification, because verification checks the cleaner against the plan.
+The rest of such a line is protected exactly like any other real word.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import re
 from statistics import median
 
 from .blocklist import Blocklist
 from .ocr import Line
 from .pdf import PageInfo
-from .rules import AD, SUSPECT, WEAK, classify_line
+from .rules import AD, SUSPECT, WEAK, _domain_label, classify_line
 
 LINE_GAP_FACTOR = 2.0       # max vertical gap between block lines, in line heights
 REAL_WORD_CONF = 50         # a word this confident is content unless proven ad
@@ -52,6 +61,7 @@ class Region:
     lines: list[str]
     reasons: list[str]
     conflicts: list[str] = field(default_factory=list)
+    kind: str = "block"            # "block" (whole lines) or "words" (URL words only)
 
     @property
     def safe(self) -> bool:
@@ -78,11 +88,11 @@ class PagePlan:
     def applied_regions(self) -> list[Region]:
         return [r for r in self.regions if r.safe] if "rotated_page" not in self.review else []
 
-    def applied_lines(self) -> list[OcrLine]:
-        """Lines that the cleaner erases (members of a region that is applied)."""
-        applied = {id(r) for r in self.applied_regions}
-        return [l for l in self.lines
-                if l.region is not None and id(self.regions[l.region]) in applied]
+    def erased(self, box: tuple[int, int, int, int]) -> bool:
+        """Whether a word box lies (by its centre) inside an applied region."""
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        return any(r.bbox[0] <= cx <= r.bbox[2] and r.bbox[1] <= cy <= r.bbox[3]
+                   for r in self.applied_regions)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -140,6 +150,44 @@ def _clusters(nodes: list[OcrLine], max_gap: float) -> list[list[OcrLine]]:
     return groups
 
 
+def _url_word(text: str, labels: list[str]) -> bool:
+    c = re.sub(r"[^a-z0-9]", "", text.lower())
+    if "www" in c or "http" in c:
+        return True
+    if any(len(l) >= 6 and l in c for l in labels):
+        return True
+    # A URL cut off at the page edge: "mpboardon". Prefix only - "online"
+    # inside a question must never match "mpboardonline".
+    return len(c) >= 6 and any(l.startswith(c) for l in labels)
+
+
+def _tld_word(text: str) -> bool:
+    return re.sub(r"[^a-z]", "", text.lower()) in ("com", "corn", "in", "net", "co")
+
+
+def _erase_part(line: OcrLine, labels: list[str]):
+    """What erasing an ad line removes, and which of its words must survive.
+
+    A URL line loses only its URL words: the source sites stamp their address
+    at the margin, and OCR joins it to whatever question sits beside it
+    ("bee loud glade. https:/www.mpboardonline", "नाम लिखिए। https://...").
+    Any other ad line goes whole. Returns (box, url_text, kept_word_boxes),
+    or None when a URL line's URL words cannot be told apart.
+    """
+    if not line.reason.startswith("domain:"):
+        return line.bbox, line.text, []
+    words = line.words
+    picked = {i for i, (t, _, _) in enumerate(words) if _url_word(t, labels)}
+    # ".com" OCR'd as its own word right after the URL.
+    picked |= {i + 1 for i in picked if i + 1 < len(words) and _tld_word(words[i + 1][0])}
+    if not picked:
+        return None
+    order = sorted(picked)
+    kept = [b for i, (t, c, b) in enumerate(words)
+            if i not in picked and c >= REAL_WORD_CONF and _alnum(t) >= 2]
+    return (_union([words[i][2] for i in order]), " ".join(words[i][0] for i in order), kept)
+
+
 def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine],
               bl: Blocklist) -> PagePlan:
     plan = PagePlan(number=info.number, mode="rebuild" if info.is_scan else "redact",
@@ -153,8 +201,10 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
     pad = max(6, int(0.4 * line_h))
     width, height = raster_size
 
+    labels = [_domain_label(d) for d in bl.domains]
     flagged = [l for l in lines if l.kind in (AD, SUSPECT)]
     members: set[int] = set()
+    protected: list[list] = []
     for group in _clusters(flagged, max_gap):
         if not any(l.kind == AD for l in group):
             continue
@@ -168,25 +218,38 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
             inside = span[1] <= cy <= span[3] and _intersects(l.bbox, span)
             if inside and l.kind in (AD, SUSPECT, WEAK):
                 group.append(l)
-        span = _union([l.bbox for l in group])
         members.update(id(l) for l in group)
         for l in group:
             l.region = len(plan.regions)
-        region = Region(bbox=span, lines=[l.text for l in group],
-                        reasons=sorted({l.reason for l in group if l.reason}))
+        parts = [(l, _erase_part(l, labels)) for l in group]
+        missing = [l.text for l, part in parts if part is None]
+        parts = [(l, part) for l, part in parts if part is not None]
+        region = Region(
+            bbox=_union([part[0] for _, part in parts]) if parts else _union([l.bbox for l in group]),
+            lines=[part[1] for _, part in parts] + missing,
+            reasons=sorted({l.reason for l in group if l.reason}),
+            kind="words" if all(l.reason.startswith("domain:") for l in group) else "block")
+        region.conflicts = [f"URL words not found: {t}" for t in missing]
+        # Words on a URL line that are not the URL are content, like any outsider.
+        region_kept = [b for _, part in parts for b in part[2]]
         plan.regions.append(region)
+        protected.append(region_kept)
 
-    for region in plan.regions:
+    for region, kept_here in zip(plan.regions, protected):
+        if region.conflicts:
+            continue
         outsiders = [l for l in lines if id(l) not in members]
+        others = [b for l in outsiders for b in l.real_words] + kept_here
         for p in (pad, 0):
             box = (max(0, region.bbox[0] - p), max(0, region.bbox[1] - p),
                    min(width, region.bbox[2] + p), min(height, region.bbox[3] + p))
-            hits = [l.text for l in outsiders
-                    if any(_intersects(wb, box) for wb in l.real_words)]
+            hits = [b for b in others if _intersects(b, box)]
             if not hits:
                 region.bbox, region.conflicts = box, []
                 break
-            region.conflicts = hits
+            region.conflicts = [f"touches {len(hits)} word(s) of real text"]
+        # Whole-line erasure is only for short lines: a long non-URL line that
+        # matched is probably a question mentioning a keyword or number.
         long_lines = [t for t in region.lines if _alnum(t) > MAX_AD_LINE_ALNUM]
         region.conflicts += [f"long line: {t}" for t in long_lines]
 
@@ -205,7 +268,7 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
         # be verified by OCR, so a person looks at it.
         plan.review.append("low_text")
     if plan.regions and all(r.safe for r in plan.regions):
-        real_left = sum(len(l.real_words) for l in lines if id(l) not in members)
+        real_left = sum(1 for l in lines for b in l.real_words if not plan.erased(b))
         if real_left <= DROP_MAX_REAL_WORDS:
             plan.drop = True
             plan.review.append("drop_page")
