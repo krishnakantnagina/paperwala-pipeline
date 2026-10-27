@@ -1,0 +1,6 @@
+# Pinned: the cleaner's output bytes and the verifier's pixel comparison
+# depend on these exact decoders, so a laptop and a CI runner must agree.
+pymupdf==2.0
+numpy==2.5.4
+pillow==13.0.0
+pytest==9.1.1

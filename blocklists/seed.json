@@ -1,0 +1,58 @@
+{
+  "domains": [
+    "pyqonline.com",
+    "mpboardonline.com",
+    "upboardonline.com",
+    "cgboardonline.com",
+    "jkboseonline.com",
+    "bsebstudy.com",
+    "maharashtrastudy.com",
+    "assamboard.com",
+    "akubihar.com",
+    "onlinebu.com",
+    "davvonline.com",
+    "aktuonline.com",
+    "rgpvonline.com"
+  ],
+  "allow_domain_suffixes": [
+    ".nic.in",
+    ".gov.in",
+    ".ac.in",
+    ".edu.in",
+    ".res.in",
+    ".edu",
+    ".gov"
+  ],
+  "keywords": [
+    "whatsapp",
+    "whats app",
+    "telegram",
+    "paytm",
+    "google pay",
+    "googlepay",
+    "phonepe",
+    "phone pe",
+    "youtube",
+    "instagram",
+    "subscribe",
+    "join our",
+    "join now",
+    "old paper",
+    "व्हाट्सएप",
+    "पुराने पेपर"
+  ],
+  "weak_words": [
+    "रुपये",
+    "पेपर्स",
+    "भेजे",
+    "पायें",
+    "www",
+    "http",
+    "contact",
+    "mob",
+    "visit",
+    "download"
+  ],
+  "lines": [],
+  "image_sha1": []
+}

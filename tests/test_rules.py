@@ -1,0 +1,90 @@
+import pytest
+
+from pwpipe.blocklist import Blocklist
+from pwpipe.ocr import OcrError, parse_tsv
+from pwpipe.rules import AD, SUSPECT, WEAK, classify_line, find_domains, find_phones, fix_digits
+
+
+@pytest.fixture(scope="module")
+def bl():
+    return Blocklist.load()
+
+
+def test_fix_digits_only_touches_numberish_tokens():
+    assert fix_digits("Whatsapp @ 93009300I2") == "Whatsapp @ 9300930012"
+    assert fix_digits("Biology Is fun") == "Biology Is fun"
+
+
+@pytest.mark.parametrize("text", [
+    "Whatsapp @ 93009300I2", "Call 93009 30012", "+91 9300-930012", "mob. 9300930O12",
+])
+def test_phone_found_through_ocr_noise(text):
+    assert find_phones(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Paper code MCSE-101", "Roll No. 0123456789", "Max Marks 70 Time 3 hours",
+    "Session 2026-2027", "12345 67890",  # starts with 1: not an Indian mobile
+])
+def test_no_phone_in_paper_numbers(text):
+    assert not find_phones(text)
+
+
+def test_domains_survive_ocr_spacing():
+    assert find_domains("Visit www. pyqonline .com today") == ["pyqonline.com"]
+
+
+@pytest.mark.parametrize("text", [
+    "https://www.pyqonline.com", "www.mpboardonline.corn", "Visit pyqonline.com",
+])
+def test_blocklisted_domain_is_ad(bl, text):
+    assert classify_line(text, bl)[0] == AD
+
+
+def test_board_name_in_header_is_not_ad(bl):
+    # "assamboard" + "of": the label alone must not match.
+    assert classify_line("ASSAM BOARD OF SECONDARY EDUCATION", bl)[0] is None
+    assert classify_line("Aryabhatta Knowledge University AKU Bihar", bl)[0] is None
+
+
+def test_official_site_is_never_flagged(bl):
+    # "Visit"/"www" may make it weak, which only matters inside an ad block.
+    assert classify_line("Visit mpbse.mp.gov.in for results", bl)[0] not in (AD, SUSPECT)
+    assert classify_line("www.rgpv.ac.in", bl)[0] not in (AD, SUSPECT)
+
+
+def test_phone_with_keyword_is_ad_alone_is_suspect(bl):
+    assert classify_line("Whatsapp @ 93009300I2", bl)[0] == AD
+    assert classify_line("9300930012", bl)[0] == SUSPECT
+
+
+def test_unknown_domain_is_suspect(bl):
+    kind, reason = classify_line("www.someothersite.com", bl)
+    assert kind == SUSPECT and "someothersite" in reason
+
+
+def test_weak_and_plain(bl):
+    assert classify_line("अपने पुराने पेपर्स भेजे और 10 रुपये से 40 रुपये तक पायें", bl)[0] in (SUSPECT, WEAK)
+    assert classify_line("प्रश्न 19 दिए गए संकुल यौगिकों के IUPAC नाम लिखिए", bl)[0] is None
+
+
+def test_approved_line_matches_fuzzily(bl):
+    custom = Blocklist(**{**bl.__dict__, "lines": ["send your old paper get 10 to 40"]})
+    assert classify_line("Send your old paper & get L0% to 40%", custom)[0] == AD
+
+
+def test_blocklist_rejects_unknown_keys(tmp_path):
+    path = tmp_path / "bl.json"
+    path.write_text('{"domain": []}', encoding="utf-8")
+    with pytest.raises(ValueError):
+        Blocklist.load(path)
+
+
+def test_blocklist_version_tracks_content(bl):
+    other = Blocklist(**{**bl.__dict__, "lines": ["x" * 20]})
+    assert other.version != bl.version
+
+
+def test_non_tsv_output_is_an_error_not_zero_words():
+    with pytest.raises(OcrError):
+        parse_tsv("some plain text output\n")
