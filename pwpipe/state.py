@@ -212,7 +212,7 @@ def claim(db: Db, stage: str, owner: str, limit: int, catalog: str | None = None
               AND status IN ('ready', 'leased')
               AND (lease_until IS NULL OR lease_until < :t)
               AND (:cat IS NULL OR catalog = :cat)
-            ORDER BY attempts, updated_at
+            ORDER BY attempts, updated_at, random()
             LIMIT :n)
         RETURNING *""",
         {"o": owner, "until": t + lease_seconds, "t": t, "stage": stage, "cat": catalog,
