@@ -34,7 +34,7 @@ from pathlib import Path
 
 from .db import Db
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_ATTEMPTS = 5
 LEASE_SECONDS = 30 * 60
 BACKOFF_SECONDS = [60, 5 * 60, 30 * 60, 2 * 3600]   # after attempt 1, 2, 3, 4
@@ -79,6 +79,10 @@ _UPGRADES = {
         "ALTER TABLE papers ADD COLUMN output_file_id TEXT",
         "ALTER TABLE papers ADD COLUMN output_bytes INTEGER",
         "ALTER TABLE papers ADD COLUMN crops_ref TEXT",
+    ],
+    3: [
+        # Papers a person sent back (requeue) jump the queue.
+        "ALTER TABLE papers ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
     ],
 }
 
@@ -212,7 +216,7 @@ def claim(db: Db, stage: str, owner: str, limit: int, catalog: str | None = None
               AND status IN ('ready', 'leased')
               AND (lease_until IS NULL OR lease_until < :t)
               AND (:cat IS NULL OR catalog = :cat)
-            ORDER BY attempts, updated_at, random()
+            ORDER BY priority DESC, attempts, updated_at, random()
             LIMIT :n)
         RETURNING *""",
         {"o": owner, "until": t + lease_seconds, "t": t, "stage": stage, "cat": catalog,
@@ -258,7 +262,8 @@ def advance(db: Db, paper: dict, owner: str, to_stage: str, status: str = "ready
     if unknown:
         raise ValueError(f"unknown result fields: {sorted(unknown)}")
     sets = {"stage": to_stage, "status": status, "attempts": 0, "last_error": None,
-            "lease_owner": None, "lease_until": None, "updated_at": now(), **results}
+            "lease_owner": None, "lease_until": None, "updated_at": now(), "priority": 0,
+            **results}
     if "review_reasons" in sets and not isinstance(sets["review_reasons"], (str, type(None))):
         sets["review_reasons"] = json.dumps(sets["review_reasons"])
     ok = _fenced_update(db, paper["drive_id"], owner, paper["stage"], sets,
@@ -331,7 +336,7 @@ def requeue(db: Db, actor: str, reason: str, catalog: str | None = None,
              WHERE {where}""", params),
         (f"""UPDATE papers SET stage = 'discovered', status = 'ready', attempts = 0,
                               last_error = NULL, lease_owner = NULL, lease_until = NULL,
-                              updated_at = :t
+                              updated_at = :t, priority = 1
              WHERE {where} RETURNING drive_id""", params),
     ])[1]
     return len(rows)

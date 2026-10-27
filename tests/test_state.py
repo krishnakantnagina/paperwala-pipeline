@@ -212,3 +212,6 @@ def test_requeue_resets_only_matching_papers(seeded, clock):
     assert len(ev) == 1
     with pytest.raises(ValueError):
         state.requeue(seeded, "t", "x", stages=("published",))
+    # Requeued papers are claimed before untouched ones.
+    clock.t += 100
+    assert state.claim(seeded, "discovered", "C", 1)[0]["drive_id"] == a["drive_id"]
