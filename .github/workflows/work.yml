@@ -1,0 +1,74 @@
+name: work
+
+# Cleans papers. Started by hand for now (the pilot); a schedule is added once
+# the pilot is reviewed. Never triggered by pull requests: it holds secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      catalog:
+        description: "Source to work on (blank = any)"
+        default: "mpboardonline.com"
+      limit:
+        description: "Papers in this run, across all workers"
+        default: "50"
+      workers:
+        description: "Parallel workers"
+        type: choice
+        options: ["1", "2", "4", "8", "16"]
+        default: "2"
+      max_minutes:
+        description: "Stop claiming after this many minutes (GitHub kills jobs at 360)"
+        default: "300"
+      review_all:
+        description: "Send every paper to review (pilot)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      workers: ${{ steps.p.outputs.workers }}
+      per_worker: ${{ steps.p.outputs.per_worker }}
+    steps:
+      - id: p
+        run: |
+          n=${{ inputs.workers }}; limit=${{ inputs.limit }}
+          echo "workers=$(python3 -c "print(list(range(1, $n + 1)))")" >> "$GITHUB_OUTPUT"
+          echo "per_worker=$(( (limit + n - 1) / n ))" >> "$GITHUB_OUTPUT"
+
+  work:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: ${{ fromJSON(needs.plan.outputs.workers) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install tesseract
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Fetch pinned OCR models
+        run: python scripts/fetch_tessdata.py
+      - name: Clean papers
+        env:
+          PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
+          PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+        run: >
+          python -m pwpipe work
+          --catalog "${{ inputs.catalog }}"
+          --limit ${{ needs.plan.outputs.per_worker }}
+          --max-minutes ${{ inputs.max_minutes }}
+          --owner "gha-${{ github.run_id }}-${{ matrix.worker }}"
+          ${{ inputs.review_all && '--review-all' || '' }}

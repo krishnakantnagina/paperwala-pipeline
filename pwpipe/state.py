@@ -34,7 +34,7 @@ from pathlib import Path
 
 from .db import Db
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_ATTEMPTS = 5
 LEASE_SECONDS = 30 * 60
 BACKOFF_SECONDS = [60, 5 * 60, 30 * 60, 2 * 3600]   # after attempt 1, 2, 3, 4
@@ -71,9 +71,21 @@ _SCHEMA = [
     """CREATE INDEX IF NOT EXISTS ix_events_paper ON events (drive_id, at)""",
 ]
 
+# Upgrades, by the version they produce. Each runs in its own transaction
+# together with the version bump, so an upgrade is never half-applied.
+_UPGRADES = {
+    2: [
+        # The cleaned copy in the new Drive, and where its report/crops live.
+        "ALTER TABLE papers ADD COLUMN output_file_id TEXT",
+        "ALTER TABLE papers ADD COLUMN output_bytes INTEGER",
+        "ALTER TABLE papers ADD COLUMN crops_ref TEXT",
+    ],
+}
+
 # Fields a stage may record on a paper as it advances.
 RESULT_FIELDS = {"source_sha256", "output_sha256", "pipeline_version", "blocklist_version",
-                 "auto_ok", "review_reasons", "report_ref"}
+                 "auto_ok", "review_reasons", "report_ref", "output_file_id", "output_bytes",
+                 "crops_ref"}
 
 
 def now() -> int:
@@ -89,11 +101,13 @@ def migrate(db: Db) -> None:
     current = int(rows[0]["value"]) if rows else 0
     if current > SCHEMA_VERSION:
         raise RuntimeError(f"database schema {current} is newer than this code ({SCHEMA_VERSION})")
-    if current == SCHEMA_VERSION:
-        return
-    db.batch([(sql, None) for sql in _SCHEMA] + [(
-        "INSERT INTO meta (key, value) VALUES ('schema_version', :v) "
-        "ON CONFLICT (key) DO UPDATE SET value = excluded.value", {"v": str(SCHEMA_VERSION)})])
+    bump = ("INSERT INTO meta (key, value) VALUES ('schema_version', :v) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+    if current == 0:
+        db.batch([(sql, None) for sql in _SCHEMA] + [(bump, {"v": "1"})])
+        current = 1
+    for version in range(current + 1, SCHEMA_VERSION + 1):
+        db.batch([(sql, None) for sql in _UPGRADES[version]] + [(bump, {"v": str(version)})])
 
 
 # Written in the same transaction as the update it records, and only if that

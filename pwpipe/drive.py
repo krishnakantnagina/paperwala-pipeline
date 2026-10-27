@@ -186,7 +186,8 @@ class DriveClient:
         return parent
 
     def upload(self, path: str | Path, name: str, parent: str, source_id: str,
-               sha256: str, anyone_reader: bool = True) -> Uploaded:
+               sha256: str, anyone_reader: bool = True,
+               mime: str = "application/pdf") -> Uploaded:
         path = Path(path)
         data = path.read_bytes()
         md5 = hashlib.md5(data).hexdigest()
@@ -196,19 +197,19 @@ class DriveClient:
                     and existing.get("md5Checksum") == md5:
                 return Uploaded(existing["id"], md5, len(data), reused=True)
 
-        meta = {"name": name, "parents": [parent], "mimeType": "application/pdf",
+        meta = {"name": name, "parents": [parent], "mimeType": mime,
                 "appProperties": {"pw_source": source_id, "pw_sha256": sha256}}
         # Resumable session: one call to open it, one to send the bytes.
         status, headers, _ = self._request(
             "POST", f"{UPLOAD}?uploadType=resumable&fields=id",
             json.dumps(meta).encode(),
             {"Content-Type": "application/json; charset=UTF-8",
-             "X-Upload-Content-Type": "application/pdf",
+             "X-Upload-Content-Type": mime,
              "X-Upload-Content-Length": str(len(data))})
         session = headers.get("Location") or headers.get("location")
         if not session:
             raise DriveError("no resumable session URL returned")
-        _, _, body = self._request("PUT", session, data, {"Content-Type": "application/pdf"})
+        _, _, body = self._request("PUT", session, data, {"Content-Type": mime})
         file_id = json.loads(body)["id"]
 
         remote = self.metadata(file_id)
@@ -217,9 +218,12 @@ class DriveClient:
             raise DriveError(f"upload corrupted: md5 {remote.get('md5Checksum')} != {md5}")
         if anyone_reader:
             # Same sharing as the originals: anyone with the link can view.
-            self._json("POST", f"{API}/files/{file_id}/permissions?fields=id",
-                       {"type": "anyone", "role": "reader"})
+            self.share_anyone(file_id)
         return Uploaded(file_id, md5, len(data), reused=False)
+
+    def share_anyone(self, file_id: str) -> None:
+        self._json("POST", f"{API}/files/{file_id}/permissions?fields=id",
+                   {"type": "anyone", "role": "reader"})
 
     def delete(self, file_id: str) -> None:
         self._request("DELETE", f"{API}/files/{file_id}")

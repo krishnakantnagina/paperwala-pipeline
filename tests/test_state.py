@@ -75,7 +75,19 @@ def expire_leases(db, clock):
 
 def test_migrate_is_idempotent(db):
     state.migrate(db)
-    assert db.execute("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] == "1"
+    assert db.execute("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] ==         str(state.SCHEMA_VERSION)
+    columns = {r["name"] for r in db.execute("PRAGMA table_info(papers)")}
+    assert {"output_file_id", "output_bytes", "crops_ref"} <= columns
+
+
+def test_upgrade_from_v1_keeps_rows(tmp_path, clock):
+    d = SqliteDb(str(tmp_path / "v1.db"))
+    d.batch([(sql, None) for sql in state._SCHEMA] +
+            [("INSERT INTO meta VALUES ('schema_version', '1')", None),
+             ("INSERT INTO papers (drive_id, catalog, updated_at) VALUES ('x', 'c', 1)", None)])
+    state.migrate(d)
+    assert state.get(d, "x")["output_file_id"] is None
+    assert d.execute("SELECT value FROM meta WHERE key='schema_version'")[0]["value"] ==         str(state.SCHEMA_VERSION)
 
 
 def test_seed_counts_and_joins_manifest(db, tmp_path, clock):

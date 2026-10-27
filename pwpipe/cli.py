@@ -6,6 +6,7 @@
     python -m pwpipe migrate [--db turso|PATH]
     python -m pwpipe seed CATALOG_DIR --catalog NAME [--db turso|PATH]
     python -m pwpipe status [--db turso|PATH]
+    python -m pwpipe work [--catalog NAME] [--limit N] [--max-minutes M] [--review-all]
 
 ``--db`` defaults to Turso via PIPELINE_DB_URL / PIPELINE_DB_TOKEN.
 """
@@ -78,6 +79,32 @@ def _status(args) -> int:
     return 0
 
 
+def _work(args) -> int:
+    import os
+    from dataclasses import asdict
+
+    from .drive import DriveClient
+    from .worker import InfraError, run
+
+    db = connect(args.db)
+    drive = DriveClient.from_env()
+    bl = Blocklist.load(args.blocklist)
+    try:
+        stats = run(db, drive, bl, args.catalog, args.limit, args.max_minutes,
+                    owner=args.owner, review_all=args.review_all,
+                    log=lambda m: print(m, flush=True))
+        code = 0
+    except InfraError as exc:
+        print(f"STOPPED: infrastructure problem, papers left for the next run: {exc}", flush=True)
+        stats, code = None, 3
+    summary = json.dumps(asdict(stats) if stats else {"stopped": True}, indent=2)
+    print(summary)
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+            fh.write(f"### worker {args.owner}\n```json\n{summary}\n```\n")
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="pwpipe")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -115,6 +142,17 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("status", help="papers per catalog / stage / status")
     st.add_argument("--db")
     st.set_defaults(func=_status)
+
+    w = sub.add_parser("work", help="clean papers until the limit or time runs out")
+    w.add_argument("--db")
+    w.add_argument("--catalog")
+    w.add_argument("--limit", type=int, default=50)
+    w.add_argument("--max-minutes", type=float, default=300)
+    w.add_argument("--owner")
+    w.add_argument("--review-all", action="store_true",
+                   help="send every paper to review (the pilot)")
+    w.add_argument("--blocklist", default=SEED_PATH)
+    w.set_defaults(func=_work)
 
     args = ap.parse_args(argv)
     return args.func(args)
