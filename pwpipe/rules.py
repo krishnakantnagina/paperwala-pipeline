@@ -88,6 +88,29 @@ def domain_allowed(domain: str, bl: Blocklist) -> bool:
     return any(domain == a or domain.endswith("." + a) for a in bl.allow_domains)
 
 
+def _plausible_domain(domain: str, text: str) -> bool:
+    """An unlisted domain is erased only if it really looks like one.
+
+    Prose produces fake ones (round 4 of the pilot): "independence.In the"
+    (a missing space after a full stop) and OCR noise like "e.com".
+    With www/http in front it is a URL. Otherwise the name before the dot
+    must have 3+ characters, and an ending written like a sentence start
+    (".In", ".Com") does not count; all-caps ("A2ZSUBJCTS.COM") does.
+    """
+    lowered = text.lower()
+    label = domain.split(".")[0]
+    if re.search(r"(?:https?:/*|www\.?)\s*" + re.escape(label), lowered):
+        return True
+    if len(label) < 3:
+        return False
+    m = re.search(re.escape(domain).replace(r"\.", r"\s*\.\s*"), text, re.IGNORECASE)
+    if m:
+        ending = re.split(r"\s*\.\s*", m.group(0))[-1]
+        if ending[:1].isupper() and not ending.isupper():
+            return False
+    return True
+
+
 # Labels printed next to a contact number; a line that is only these plus a
 # number is a contact line, not a question.
 _PHONE_LABELS = re.compile(
@@ -128,7 +151,8 @@ def classify_line(text: str, bl: Blocklist) -> tuple[str | None, str]:
     if phones and keyword:
         return AD, f"phone+keyword:{keyword}"
 
-    unknown = [d for d in find_domains(text, explicit_only=True) if not domain_allowed(d, bl)]
+    unknown = [d for d in find_domains(text, explicit_only=True)
+               if not domain_allowed(d, bl) and _plausible_domain(d, text)]
     if unknown:
         # Promotion for some other website: erased (URL words only).
         return AD, f"domain:{unknown[0]}"

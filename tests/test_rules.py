@@ -127,3 +127,17 @@ def test_board_name_followed_by_a_word_is_not_its_site(bl, text):
 ])
 def test_network_domains_are_ads(bl, text):
     assert classify_line(text, bl)[0] == "ad"
+
+
+@pytest.mark.parametrize("text", [
+    "for the attainment of India's independence.In the end", "& ta e.com", "a.b.com is here",
+])
+def test_prose_and_noise_are_not_promo_domains(bl, text):
+    assert classify_line(text, bl)[0] not in (AD, SUSPECT)
+
+
+@pytest.mark.parametrize("text", [
+    "Visit StudyAdda.com for notes", "www.xyz.in", "NOTESHUB.COM", "http://abc.in",
+])
+def test_real_unlisted_promo_domains_are_still_erased(bl, text):
+    assert classify_line(text, bl)[0] == AD
