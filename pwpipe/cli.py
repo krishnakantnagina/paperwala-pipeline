@@ -10,6 +10,8 @@
     python -m pwpipe review-report [--catalog NAME] [--out DIR]
     python -m pwpipe requeue --reason TEXT [--catalog NAME] [--stage S ...] [--status S ...]
     python -m pwpipe health          (exit 1 = something needs a person)
+    python -m pwpipe publish [--limit N] [--max-minutes M]
+    python -m pwpipe unpublish DRIVE_ID ... --reason TEXT
 
 ``--db`` defaults to Turso via PIPELINE_DB_URL / PIPELINE_DB_TOKEN.
 """
@@ -142,6 +144,35 @@ def _health(args) -> int:
     return 0 if h.ok else 1
 
 
+def _publish(args) -> int:
+    import os
+    from dataclasses import asdict
+
+    from .db import connect_live
+    from .drive import DriveClient
+    from .publish import PublishStop, run
+
+    site = os.environ.get("SITE_URL", "https://paperwala-b9nn.onrender.com")
+    try:
+        stats = run(connect(args.db), connect_live(), DriveClient.from_env(), site,
+                    args.limit, args.max_minutes, owner=args.owner or "publish",
+                    log=lambda m: print(m, flush=True))
+    except PublishStop as exc:
+        print(f"STOPPED: {exc}", flush=True)
+        return 3
+    print(json.dumps(asdict(stats), indent=2))
+    return 0
+
+
+def _unpublish(args) -> int:
+    from .db import connect_live
+    from .publish import unpublish
+
+    n = unpublish(connect(args.db), connect_live(), args.ids, "cli", args.reason)
+    print(f"restored {n} site row(s) to the original files")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="pwpipe")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -209,6 +240,19 @@ def main(argv: list[str] | None = None) -> int:
     h = sub.add_parser("health", help="daily health check")
     h.add_argument("--db")
     h.set_defaults(func=_health)
+
+    pb = sub.add_parser("publish", help="point the live site at cleaned copies")
+    pb.add_argument("--db")
+    pb.add_argument("--limit", type=int, default=2000)
+    pb.add_argument("--max-minutes", type=float, default=100)
+    pb.add_argument("--owner")
+    pb.set_defaults(func=_publish)
+
+    up = sub.add_parser("unpublish", help="restore original links for papers")
+    up.add_argument("ids", nargs="+")
+    up.add_argument("--reason", required=True)
+    up.add_argument("--db")
+    up.set_defaults(func=_unpublish)
 
     args = ap.parse_args(argv)
     return args.func(args)

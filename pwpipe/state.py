@@ -34,7 +34,7 @@ from pathlib import Path
 
 from .db import Db
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MAX_ATTEMPTS = 5
 LEASE_SECONDS = 30 * 60
 BACKOFF_SECONDS = [60, 5 * 60, 30 * 60, 2 * 3600]   # after attempt 1, 2, 3, 4
@@ -84,12 +84,16 @@ _UPGRADES = {
         # Papers a person sent back (requeue) jump the queue.
         "ALTER TABLE papers ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
     ],
+    4: [
+        # The site rows a publish switched, with their old links (JSON).
+        "ALTER TABLE papers ADD COLUMN published_rows TEXT",
+    ],
 }
 
 # Fields a stage may record on a paper as it advances.
 RESULT_FIELDS = {"source_sha256", "output_sha256", "pipeline_version", "blocklist_version",
                  "auto_ok", "review_reasons", "report_ref", "output_file_id", "output_bytes",
-                 "crops_ref"}
+                 "crops_ref", "published_rows"}
 
 
 def now() -> int:

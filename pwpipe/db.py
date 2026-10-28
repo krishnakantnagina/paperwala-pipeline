@@ -182,6 +182,16 @@ class TursoDb(Db):
         return [_rows(r) if r else [] for r in batch["step_results"][1:1 + len(stmts)]]
 
 
+def connect_live() -> "TursoDb":
+    """The live site's database (Turso), for the publish job only."""
+    url, token = os.environ.get("LIVE_DB_URL"), os.environ.get("LIVE_DB_TOKEN")
+    if not url or not token:
+        raise DbError("LIVE_DB_URL and LIVE_DB_TOKEN must be set to publish")
+    # Accept the app's own DATABASE_URL form too: sqlite+libsql://host/?secure=true
+    host = re.sub(r"^[a-z+]+://", "", url).split("/")[0].split("?")[0]
+    return TursoDb("https://" + host, token)
+
+
 def connect(target: str | None = None) -> Db:
     """A file path gives SqliteDb; nothing (or "turso") gives TursoDb from env."""
     if target and target != "turso":

@@ -1,0 +1,43 @@
+name: publish
+
+# Points the live site at cleaned copies, 20 papers a batch, every 2 hours.
+# Off until the repo variable PUBLISH_ENABLED is "true" (Settings -> Secrets
+# and variables -> Actions -> Variables): flip it to "false" to stop all
+# publishing at once. Undo for any paper: `python -m pwpipe unpublish <id>`.
+on:
+  schedule:
+    - cron: "45 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Most papers to publish in this run"
+        default: "200"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: vars.PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Publish
+        env:
+          PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
+          PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+          LIVE_DB_URL: ${{ secrets.LIVE_DB_URL }}
+          LIVE_DB_TOKEN: ${{ secrets.LIVE_DB_TOKEN }}
+          SITE_URL: https://paperwala-b9nn.onrender.com
+        run: python -m pwpipe publish --limit ${{ inputs.limit || '2000' }} --max-minutes 100
