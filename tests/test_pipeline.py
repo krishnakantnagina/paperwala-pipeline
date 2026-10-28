@@ -50,9 +50,12 @@ def test_real_paper_cleaned_and_verified(tmp_path, bl, name):
     out = pymupdf.open(dst)
     assert out.metadata["creator"] == "" and out.metadata["producer"] == ""
     for page in out:
-        # Only the scan survives: no hidden logo, no white box.
+        # Only the scan survives: no hidden logo, no white box - plus the mark.
         assert len(page.get_images()) == 1
         assert page.get_drawings() == []
+        assert page.get_text().strip() == "paperwala.org"
+    assert report["stamped_pages"] == 4
+    assert all(p["stamp"] == "ok" for p in report["verify"]["pages"])
     assert dst.stat().st_size <= src.stat().st_size * 1.2
     assert (tmp_path / "crops" / "p4_r1.png").exists()
 

@@ -92,6 +92,8 @@ class PagePlan:
     # PDF point = origin + raster pixel * scale (see pdf.Raster).
     origin: tuple[float, float] = (0.0, 0.0)
     scale: tuple[float, float] = (1.0, 1.0)
+    # Raster box for the "paperwala.org" mark (stamp.py), or None: no room.
+    stamp_box: tuple[int, int, int, int] | None = None
     lines: list[OcrLine] = field(default_factory=list)
 
     @property

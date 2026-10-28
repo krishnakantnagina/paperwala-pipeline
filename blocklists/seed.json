@@ -211,6 +211,7 @@
     ".gov"
   ],
   "allow_domains": [
+    "paperwala.org",
     "google.com",
     "google.co.in",
     "gmail.com",

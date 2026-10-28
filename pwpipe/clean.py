@@ -21,6 +21,7 @@ from .blocklist import Blocklist
 from .detect import PagePlan
 from .pdf import PdfInfo, image_sha1, open_pdf, pixmap_to_image
 from .rules import AD, classify_line
+from .stamp import draw_stamp
 
 JPEG_QUALITY = 92
 
@@ -124,6 +125,12 @@ def clean_pdf(src_path: str | Path, info: PdfInfo, plans: list[PagePlan], bl: Bl
                 _rebuild_page(src, out, page_info, plan)
             else:
                 _redact_page(src, out, plan, bl)
+            if plan.stamp_box:
+                ox, oy = plan.origin
+                sx, sy = plan.scale
+                x0, y0, x1, y1 = plan.stamp_box
+                draw_stamp(out[-1], pymupdf.Rect(ox + x0 * sx, oy + y0 * sy,
+                                                 ox + x1 * sx, oy + y1 * sy))
         if out.page_count == 0:
             raise ValueError("every page planned as dropped; refusing to write an empty PDF")
         # The originals carry the converter's name ("A-PDF Image To PDF") and

@@ -179,6 +179,14 @@ def pixmap_to_image(pix: pymupdf.Pixmap) -> Image.Image:
     return Image.frombytes(mode, (pix.width, pix.height), pix.samples)
 
 
+def largest_image(doc: pymupdf.Document, page_number: int) -> Image.Image:
+    """The biggest image drawn on a page: a rebuilt page's scan, read without
+    the vector text (the paperwala.org mark) that sits on top of it."""
+    page = doc[page_number]
+    best = max(page.get_images(full=True), key=lambda i: i[2] * i[3])
+    return pixmap_to_image(pymupdf.Pixmap(doc, best[0]))
+
+
 def raster_page(doc: pymupdf.Document, info: PageInfo, dpi: int = RENDER_DPI,
                 force_render: bool = False) -> Raster:
     if info.is_scan and not force_render:

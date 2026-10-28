@@ -25,7 +25,8 @@ from .blocklist import Blocklist
 from .detect import (REAL_WORD_CONF, PagePlan, _alnum, _tld_word, _url_word,
                      classify_lines, line_labels)
 from .ocr import DEFAULT_LANGS, group_lines, ocr_image
-from .pdf import PdfInfo, analyze, open_pdf, raster_page
+from .pdf import PdfInfo, analyze, largest_image, open_pdf, raster_page
+from .stamp import STAMP_TEXT
 from .rules import AD, SUSPECT, WEAK, _domain_label, line_key
 
 MIN_RETENTION = 0.85
@@ -63,7 +64,9 @@ def _tokens(lines, plan: PagePlan | None = None) -> Counter:
     return out
 
 
-def _pixel_check(before: Image.Image, after: Image.Image, boxes, lossless: bool) -> str | None:
+def _pixel_check(before: Image.Image, after: Image.Image, boxes, lossless: bool,
+                 ignore=()) -> str | None:
+    """``boxes`` must come out white; ``ignore`` (the mark) may hold anything."""
     if before.size != after.size:
         return f"raster size {after.size} != {before.size}"
     a = np.asarray(before.convert("L"), dtype=np.int16)
@@ -71,8 +74,12 @@ def _pixel_check(before: Image.Image, after: Image.Image, boxes, lossless: bool)
     inside = np.zeros(a.shape, dtype=bool)
     for x0, y0, x1, y1 in boxes:
         inside[y0:y1, x0:x1] = True
+    skip = np.zeros(a.shape, dtype=bool)
+    for x0, y0, x1, y1 in ignore:
+        skip[y0:y1, x0:x1] = True
+    inside &= ~skip
     diff = np.abs(a - b)
-    outside = ~inside
+    outside = ~inside & ~skip
     if lossless:
         changed = int(np.count_nonzero(diff[outside]))
         if changed:
@@ -146,20 +153,31 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
             if abs(dst_page.width - src_page.width) > 0.5 or \
                     abs(dst_page.height - src_page.height) > 0.5:
                 result.fail(f"page {plan.number}: size changed")
-            # Read both pages the same way: a redacted text page can come out
-            # looking like a scan, and its image would not match the render.
+            # Read both pages the same way. A rebuilt page is compared by its
+            # scan image alone (the mark is vector text on top of it); a
+            # redacted page is rendered on both sides.
             render = plan.mode == "redact"
-            raster = raster_page(dst_doc, dst_page, force_render=render)
             before = raster_page(src_doc, src_page, force_render=render)
+            if plan.mode == "rebuild":
+                after_img = largest_image(dst_doc, dst_page.number)
+            else:
+                after_img = raster_page(dst_doc, dst_page, force_render=True).image
             boxes = [b for r in plan.applied_regions for b in r.boxes]
             lossless = plan.mode == "rebuild" and "DCT" not in next(
                 i.filter for i in src_page.images if i.xref == src_page.scan_xref)
-            problem = _pixel_check(before.image, raster.image, boxes, lossless)
+            ignore = [plan.stamp_box] if plan.stamp_box and render else []
+            problem = _pixel_check(before.image, after_img, boxes, lossless, ignore)
             if problem:
                 result.fail(f"page {plan.number}: {problem}")
             stat["pixels"] = problem or "ok"
 
-            lines = classify_lines(group_lines(ocr_image(raster.image, langs)), bl)
+            if plan.stamp_box:
+                has_mark = STAMP_TEXT in dst_doc[dst_page.number].get_text()
+                stat["stamp"] = "ok" if has_mark else "missing"
+                if not has_mark:
+                    result.fail(f"page {plan.number}: paperwala.org mark missing")
+
+            lines = classify_lines(group_lines(ocr_image(after_img, langs)), bl)
 
             ads = [l.text for l in lines if l.kind == AD]
             if ads:
@@ -184,7 +202,7 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
                 (result.notes.append if lossless and not problem else result.fail)(msg)
             result.pages.append(stat)
             if keep_rasters_for and plan.number in keep_rasters_for:
-                result.rasters[plan.number] = raster.image
+                result.rasters[plan.number] = after_img
     finally:
         dst_doc.close()
         src_doc.close()
