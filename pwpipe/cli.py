@@ -14,6 +14,7 @@
     python -m pwpipe unpublish DRIVE_ID ... --reason TEXT
     python -m pwpipe sync            (site review queue <-> pipeline, both ways)
     python -m pwpipe route [--limit N] [--max-minutes M]
+    python -m pwpipe next work|publish|route --since T --owner O   (exit 0 = run again now)
 
 ``--db`` defaults to Turso via PIPELINE_DB_URL / PIPELINE_DB_TOKEN.
 """
@@ -205,6 +206,14 @@ def _route(args) -> int:
     return 0
 
 
+def _next(args) -> int:
+    from .chain import again
+
+    ok, why = again(connect(args.db), args.job, args.since, args.owner)
+    print(why)
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="pwpipe")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -295,6 +304,13 @@ def main(argv: list[str] | None = None) -> int:
     ro.add_argument("--limit", type=int, default=1500)
     ro.add_argument("--max-minutes", type=float, default=150)
     ro.set_defaults(func=_route)
+
+    nx = sub.add_parser("next", help="exit 0 if a job should start its next run now")
+    nx.add_argument("job", choices=["work", "publish", "route"])
+    nx.add_argument("--since", type=int, required=True, help="this run's start, unix time")
+    nx.add_argument("--owner", required=True, help="this run's lease owner (or prefix)")
+    nx.add_argument("--db")
+    nx.set_defaults(func=_next)
 
     args = ap.parse_args(argv)
     return args.func(args)

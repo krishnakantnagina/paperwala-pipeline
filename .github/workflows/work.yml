@@ -1,8 +1,10 @@
 name: work
 
-# Cleans papers. Runs by itself every 6 hours (16 workers, every catalog,
-# until nothing is left), or by hand with chosen inputs. Never triggered by
-# pull requests: it holds secrets.
+# Cleans papers. A full-speed run (16 workers, every catalog) starts the next
+# one itself when it ends, while papers are left and it made progress (see
+# pwpipe/chain.py); the 6-hourly schedule is the backup. By hand: chosen
+# inputs, and it chains only with "chain" ticked. Never triggered by pull
+# requests: it holds secrets.
 on:
   schedule:
     - cron: "17 */6 * * *"
@@ -26,14 +28,18 @@ on:
         description: "Send every paper to review (pilot)"
         type: boolean
         default: true
+      chain:
+        description: "Keep going: start the next run when this one ends"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# Scheduled runs queue instead of overlapping (leases would keep overlapping
-# runs correct anyway; this keeps them inside the 20-job limit).
+# Runs queue instead of overlapping (leases would keep overlapping runs
+# correct anyway; this keeps them inside the 20-job limit).
 concurrency:
-  group: work-${{ github.event_name }}
+  group: work
   cancel-in-progress: false
 
 jobs:
@@ -42,6 +48,7 @@ jobs:
     outputs:
       workers: ${{ steps.p.outputs.workers }}
       per_worker: ${{ steps.p.outputs.per_worker }}
+      since: ${{ steps.p.outputs.since }}
     steps:
       - id: p
         run: |
@@ -49,6 +56,7 @@ jobs:
           n=${{ inputs.workers || '16' }}; limit=${{ inputs.limit || '8000' }}
           echo "workers=$(python3 -c "print(list(range(1, $n + 1)))")" >> "$GITHUB_OUTPUT"
           echo "per_worker=$(( (limit + n - 1) / n ))" >> "$GITHUB_OUTPUT"
+          echo "since=$(date +%s)" >> "$GITHUB_OUTPUT"
 
   work:
     needs: plan
@@ -82,3 +90,37 @@ jobs:
           --max-minutes ${{ inputs.max_minutes || '300' }}
           --owner "gha-${{ github.run_id }}-${{ matrix.worker }}"
           ${{ inputs.review_all && '--review-all' || '' }}
+
+  # GitHub's scheduler is best-effort, so the chain does not wait for it.
+  next:
+    needs: [plan, work]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Start the next runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
+          PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name == 'schedule' || inputs.chain }}" = "true" ] &&
+             python -m pwpipe next work --since "${{ needs.plan.outputs.since }}" \
+               --owner "gha-${{ github.run_id }}-"; then
+            bash scripts/start_run.sh work.yml -f catalog="${{ inputs.catalog }}" -f limit=8000 \
+              -f workers=16 -f max_minutes=300 -f review_all=false -f chain=true
+          fi
+          # Papers this run approved go live and get routed without waiting.
+          if [ "${{ vars.PUBLISH_ENABLED }}" = "true" ]; then
+            bash scripts/start_run.sh publish.yml -f chain=true -f limit=2000
+          fi
+          bash scripts/start_run.sh route.yml -f limit=1500

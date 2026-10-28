@@ -1,9 +1,12 @@
 name: publish
 
-# Points the live site at cleaned copies, 20 papers a batch, every 2 hours.
-# Scheduled runs are off until the repo variable PUBLISH_ENABLED is "true" (Settings -> Secrets
-# and variables -> Actions -> Variables): flip it to "false" to stop all
-# publishing at once. Undo for any paper: `python -m pwpipe unpublish <id>`.
+# Points the live site at cleaned copies, 20 papers a batch. Each run starts
+# the next itself: at once while approved papers are waiting, otherwise two
+# hours after it began, so review decisions sync every 2 hours (the schedule
+# is the backup). Off while the repo variable PUBLISH_ENABLED is not "true"
+# (Settings -> Secrets and variables -> Actions -> Variables): "false" stops
+# all publishing and the chain at once; only a run started by hand still goes.
+# Undo for any paper: `python -m pwpipe unpublish <id>`.
 on:
   schedule:
     - cron: "45 */2 * * *"
@@ -12,21 +15,30 @@ on:
       limit:
         description: "Most papers to publish in this run"
         default: "200"
+      chain:
+        description: "Started by the chain (obeys PUBLISH_ENABLED)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-concurrency:
-  group: publish
-  cancel-in-progress: false
-
 jobs:
   publish:
-    # By hand: always. On the schedule: only while the switch is on.
-    if: github.event_name == 'workflow_dispatch' || vars.PUBLISH_ENABLED == 'true'
+    # By hand: always. Schedule and chain: only while the switch is on.
+    if: vars.PUBLISH_ENABLED == 'true' || (github.event_name == 'workflow_dispatch' && !inputs.chain)
+    # On the job, not the workflow: a run waiting out its two hours in `next`
+    # must not hold up a run started by hand.
+    concurrency:
+      group: publish
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    outputs:
+      since: ${{ steps.t.outputs.since }}
     steps:
+      - id: t
+        run: echo "since=$(date +%s)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -52,3 +64,46 @@ jobs:
           LIVE_DB_TOKEN: ${{ secrets.LIVE_DB_TOKEN }}
           SITE_URL: https://paperwala-b9nn.onrender.com
         run: python -m pwpipe publish --limit ${{ inputs.limit || '2000' }} --max-minutes 100
+
+  next:
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Start the next runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
+          PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}
+        run: |
+          since="${{ needs.publish.outputs.since }}"
+          since=${since:-$(date +%s)}
+          # The daily health check rides on this chain too.
+          last=$(gh run list --workflow health.yml --limit 1 --json createdAt --jq '.[0].createdAt // ""')
+          if [ -z "$last" ] || [ $(( $(date +%s) - $(date -d "$last" +%s) )) -gt 82800 ]; then
+            bash scripts/start_run.sh health.yml
+          fi
+          # A failed run (site down, Drive error) is never progress: it waits
+          # out the two hours like an idle one, so a fault cannot loop.
+          if [ "${{ needs.publish.result }}" = "success" ] &&
+             python -m pwpipe next publish --since "$since" --owner publish; then
+            :
+          else
+            wait=$(( since + 7200 - $(date +%s) ))
+            if [ "$wait" -gt 0 ]; then echo "next publish in $(( wait / 60 )) min"; sleep "$wait"; fi
+          fi
+          if [ "${{ vars.PUBLISH_ENABLED }}" != "true" ]; then
+            echo "PUBLISH_ENABLED is not true: the chain stops here"
+            exit 0
+          fi
+          bash scripts/start_run.sh publish.yml -f chain=true -f limit=2000

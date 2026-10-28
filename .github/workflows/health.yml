@@ -51,12 +51,15 @@ jobs:
           fi
           exit 1
       # GitHub disables schedules in a public repo after 60 days without a
-      # commit. One tiny commit a month keeps the work schedule alive.
+      # commit. One tiny commit a month keeps the backup schedules alive.
+      # Runs the publish chain starts count too: it starts one daily.
       - name: Monthly keep-alive
-        if: always() && github.event_name == 'schedule'
+        if: always()
         run: |
           [ "$(date -u +%d)" = "01" ] || exit 0
           date -u +%F > .github/keepalive
+          git add .github/keepalive
+          git diff --cached --quiet && exit 0   # already done today
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/keepalive
