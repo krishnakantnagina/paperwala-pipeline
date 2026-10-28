@@ -9,6 +9,7 @@
     python -m pwpipe work [--catalog NAME] [--limit N] [--max-minutes M] [--review-all]
     python -m pwpipe review-report [--catalog NAME] [--out DIR]
     python -m pwpipe requeue --reason TEXT [--catalog NAME] [--stage S ...] [--status S ...]
+    python -m pwpipe health          (exit 1 = something needs a person)
 
 ``--db`` defaults to Turso via PIPELINE_DB_URL / PIPELINE_DB_TOKEN.
 """
@@ -92,7 +93,8 @@ def _work(args) -> int:
     drive = DriveClient.from_env()
     bl = Blocklist.load(args.blocklist)
     try:
-        stats = run(db, drive, bl, args.catalog, args.limit, args.max_minutes,
+        # A scheduled run passes an empty catalog: that means every catalog.
+        stats = run(db, drive, bl, args.catalog or None, args.limit, args.max_minutes,
                     owner=args.owner, review_all=args.review_all,
                     log=lambda m: print(m, flush=True))
         code = 0
@@ -121,6 +123,23 @@ def _requeue(args) -> int:
                       tuple(args.stage), tuple(args.status), args.ids or None)
     print(f"requeued {n} papers")
     return 0
+
+
+def _health(args) -> int:
+    from .drive import DriveClient
+    from .health import Health, check_drive, check_state, report
+
+    h = Health()
+    try:
+        check_state(connect(args.db), h)
+    except Exception as exc:
+        h.problems.append(f"state database unreachable: {exc}")
+    try:
+        check_drive(DriveClient.from_env(), h)
+    except Exception as exc:
+        h.problems.append(f"Google Drive credentials missing or unreadable: {exc}")
+    print(report(h))
+    return 0 if h.ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -186,6 +205,10 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--ids", nargs="*")
     q.add_argument("--reason", required=True)
     q.set_defaults(func=_requeue)
+
+    h = sub.add_parser("health", help="daily health check")
+    h.add_argument("--db")
+    h.set_defaults(func=_health)
 
     args = ap.parse_args(argv)
     return args.func(args)

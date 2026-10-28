@@ -1,8 +1,11 @@
 name: work
 
-# Cleans papers. Started by hand for now (the pilot); a schedule is added once
-# the pilot is reviewed. Never triggered by pull requests: it holds secrets.
+# Cleans papers. Runs by itself every 6 hours (16 workers, every catalog,
+# until nothing is left), or by hand with chosen inputs. Never triggered by
+# pull requests: it holds secrets.
 on:
+  schedule:
+    - cron: "17 */6 * * *"
   workflow_dispatch:
     inputs:
       catalog:
@@ -27,6 +30,12 @@ on:
 permissions:
   contents: read
 
+# Scheduled runs queue instead of overlapping (leases would keep overlapping
+# runs correct anyway; this keeps them inside the 20-job limit).
+concurrency:
+  group: work-${{ github.event_name }}
+  cancel-in-progress: false
+
 jobs:
   plan:
     runs-on: ubuntu-24.04
@@ -36,7 +45,8 @@ jobs:
     steps:
       - id: p
         run: |
-          n=${{ inputs.workers }}; limit=${{ inputs.limit }}
+          # A scheduled run has no inputs: defaults for a full-speed run.
+          n=${{ inputs.workers || '16' }}; limit=${{ inputs.limit || '8000' }}
           echo "workers=$(python3 -c "print(list(range(1, $n + 1)))")" >> "$GITHUB_OUTPUT"
           echo "per_worker=$(( (limit + n - 1) / n ))" >> "$GITHUB_OUTPUT"
 
@@ -69,6 +79,6 @@ jobs:
           python -m pwpipe work
           --catalog "${{ inputs.catalog }}"
           --limit ${{ needs.plan.outputs.per_worker }}
-          --max-minutes ${{ inputs.max_minutes }}
+          --max-minutes ${{ inputs.max_minutes || '300' }}
           --owner "gha-${{ github.run_id }}-${{ matrix.worker }}"
           ${{ inputs.review_all && '--review-all' || '' }}
