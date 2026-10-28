@@ -104,12 +104,16 @@ def classify_line(text: str, bl: Blocklist) -> tuple[str | None, str]:
     lowered = text.lower()
     compact = re.sub(r"[^a-z0-9]", "", lowered)
 
+    # Dots rejoined across OCR spaces ("pyqonline .com"), then letters only,
+    # keeping the dots: "www.pyqonline.com" -> "www.pyqonline.com".
+    dotted = re.sub(r"[^a-z0-9.]", "", re.sub(r"\s*\.\s*", ".", lowered))
     for domain in bl.domains:
         label = _domain_label(domain)
-        # The label must carry a "www" or TLD with it: "assamboard" alone is
-        # also the start of "Assam Board of Secondary Education" in a header.
-        if len(label) >= 6 and re.search(
-                rf"www{label}|{label}(?:com|corn|con|cam|co|in|net)", compact):
+        # The label must carry "www" or a dot + TLD. Not just a TLD after it:
+        # "AKU Bihar in 2019" squeezes to "akubiharin" and "Assam Board in"
+        # to "assamboardin" - board names are printed on their own papers.
+        if len(label) >= 6 and (f"www{label}" in compact or re.search(
+                rf"{label}\.(?:com|corn|con|cam|co|in|net)", dotted)):
             return AD, f"domain:{domain}"
 
     key = line_key(text)

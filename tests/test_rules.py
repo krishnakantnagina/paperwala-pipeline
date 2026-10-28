@@ -111,3 +111,19 @@ def test_prose_with_dots_is_not_a_domain(bl, text):
 ])
 def test_written_out_unknown_domain_is_ad(bl, text):
     assert classify_line(text, bl)[0] == AD
+
+
+@pytest.mark.parametrize("text", [
+    "Aryabhatta Knowledge University, AKU Bihar in 2019", "Assam Board in the year 2021",
+    "MP Board online examination", "DAVV online result",
+])
+def test_board_name_followed_by_a_word_is_not_its_site(bl, text):
+    assert classify_line(text, bl)[0] is None or classify_line(text, bl)[0] == "weak"
+
+
+@pytest.mark.parametrize("text", [
+    "www.akubihar.com", "akubihar .com", "Visit abvmuonline.com", "https://www.aknuonline.com",
+    "AKTUONLINE.COM", "wwwmpboardonlinecom",
+])
+def test_network_domains_are_ads(bl, text):
+    assert classify_line(text, bl)[0] == "ad"
