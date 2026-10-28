@@ -136,3 +136,25 @@ ten digits starting 6-9, so codes, roll numbers and years never match.
 
 Result on the 10 papers that failed: 9 clean and verified, 1 correctly sent
 to review (its URL touches question text).
+
+## Running by itself (all on GitHub Actions)
+
+| Workflow | When | Does |
+|---|---|---|
+| `work.yml` | every 6 h (16 workers) | download → clean → verify → upload privately; auto-approve or send to review |
+| `publish.yml` | every 2 h, while repo variable `PUBLISH_ENABLED` = `true` | **sync** with the site's review queue, then **publish** approved papers (switch the site's link to the cleaned copy, 20 per batch, site checked after each) |
+| `route.yml` | every 3 h | **routing**: read each paper's header (rules first, Groq/Gemini only when needed); fill empty exam type / year; propose subject moves for a person |
+| `health.yml` | daily | state DB, Drive login and space, stalls, dead papers → opens a "Pipeline health" issue (emails the owner); monthly keep-alive commit |
+
+- **Stop publishing:** set `PUBLISH_ENABLED` to `false`. **Undo a paper:** `python -m pwpipe unpublish <original drive id> --reason "..."` (the original file was never touched).
+- **The paperwala.org mark** (`stamp.py`) is vector text at the foot of each page, only where the bottom is blank; verify checks it.
+- **Review without credentials on the site:** `sync.py` copies papers waiting for a person into the site's `pipeline_review` table (site migration `0009`), reads the decisions made in `/admin/review` back (publish / keep original / clean again; for routing items move / leave), and acts on students' `paper_reports`. Each row is applied once (`synced`).
+- **More AI keys:** add `GEMINI_API_KEY_2`…`_5` / `GROQ_API_KEY_2`…`_5` as repo secrets (`gh secret set -f keys.txt`). `keys.py` rotates them, rests a key on 429/5xx, retires it on 401/403, and shares daily counts across workers. Out of quota never fails a paper: it waits.
+- **Live database access** (`LIVE_DB_URL`, `LIVE_DB_TOKEN`) is used only by publish, sync and route.
+
+### Lessons from going live (2026-10-28)
+
+- Groq is behind Cloudflare, which answers urllib's default User-Agent with `403 error code: 1010`; send a UA, or a 403 retires every key.
+- Pinned Gemini model names get withdrawn for new keys (404); use the `gemini-flash-latest` alias.
+- Hindi: `वार्षिक परीक्षा` (annual) is the tail of `अर्धवार्षिक परीक्षा` (half yearly); match half yearly first and guard annual.
+- Turso rejects named SQL parameters a statement does not use; SQLite ignores them.
