@@ -34,7 +34,7 @@ from pathlib import Path
 
 from .db import Db
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MAX_ATTEMPTS = 5
 LEASE_SECONDS = 30 * 60
 BACKOFF_SECONDS = [60, 5 * 60, 30 * 60, 2 * 3600]   # after attempt 1, 2, 3, 4
@@ -87,6 +87,10 @@ _UPGRADES = {
     4: [
         # The site rows a publish switched, with their old links (JSON).
         "ALTER TABLE papers ADD COLUMN published_rows TEXT",
+    ],
+    5: [
+        # When the paper was last copied into the site's review queue.
+        "ALTER TABLE papers ADD COLUMN review_pushed_at INTEGER",
     ],
 }
 
@@ -344,6 +348,24 @@ def requeue(db: Db, actor: str, reason: str, catalog: str | None = None,
              WHERE {where} RETURNING drive_id""", params),
     ])[1]
     return len(rows)
+
+
+def decide(db: Db, drive_id: str, expect: tuple[str, str], to: tuple[str, str], actor: str,
+           detail: str = "") -> bool:
+    """A person's decision (from the site's review queue): move a paper from
+    the (stage, status) they saw to a new one. Fenced on what they saw, so a
+    decision about a paper that has moved on since does nothing."""
+    if to[0] not in STAGES or to[1] not in STATUSES:
+        raise ValueError(f"bad target {to}")
+    rows = db.batch([
+        ("""UPDATE papers SET stage = :ts, status = :tst, attempts = 0, last_error = NULL,
+                              lease_owner = NULL, lease_until = NULL, updated_at = :t
+            WHERE drive_id = :d AND stage = :fs AND status = :fst RETURNING drive_id""",
+         {"ts": to[0], "tst": to[1], "t": now(), "d": drive_id, "fs": expect[0],
+          "fst": expect[1]}),
+        (_EVENT_IF_CHANGED, _event(drive_id, actor, expect[0], to[0], to[1], detail)),
+    ])[0]
+    return bool(rows)
 
 
 def get(db: Db, drive_id: str) -> dict | None:

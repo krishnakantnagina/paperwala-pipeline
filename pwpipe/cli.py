@@ -12,6 +12,7 @@
     python -m pwpipe health          (exit 1 = something needs a person)
     python -m pwpipe publish [--limit N] [--max-minutes M]
     python -m pwpipe unpublish DRIVE_ID ... --reason TEXT
+    python -m pwpipe sync            (site review queue <-> pipeline, both ways)
 
 ``--db`` defaults to Turso via PIPELINE_DB_URL / PIPELINE_DB_TOKEN.
 """
@@ -173,6 +174,19 @@ def _unpublish(args) -> int:
     return 0
 
 
+def _sync(args) -> int:
+    from dataclasses import asdict
+
+    from .db import connect_live
+    from .drive import DriveClient
+    from .sync import run
+
+    stats = run(connect(args.db), connect_live(), DriveClient.from_env(),
+                log=lambda m: print(m, flush=True))
+    print(json.dumps(asdict(stats), indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="pwpipe")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -253,6 +267,10 @@ def main(argv: list[str] | None = None) -> int:
     up.add_argument("--reason", required=True)
     up.add_argument("--db")
     up.set_defaults(func=_unpublish)
+
+    sy = sub.add_parser("sync", help="exchange review items and decisions with the site")
+    sy.add_argument("--db")
+    sy.set_defaults(func=_sync)
 
     args = ap.parse_args(argv)
     return args.func(args)

@@ -33,7 +33,17 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -r requirements.txt
+      - name: Sync with the site's review queue
+        env:
+          PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
+          PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}
+          GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
+          LIVE_DB_URL: ${{ secrets.LIVE_DB_URL }}
+          LIVE_DB_TOKEN: ${{ secrets.LIVE_DB_TOKEN }}
+        run: python -m pwpipe sync
       - name: Publish
+        # Publishing does not depend on the review sync having worked.
+        if: always()
         env:
           PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
           PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}
