@@ -57,11 +57,21 @@ class OcrLine:
 
 @dataclass
 class Region:
+    """One ad block. ``boxes`` are what gets erased - one per member line: the
+    whole line, or just its URL words. Not their union: a URL line above a
+    phone line would make one rectangle that also covers the words kept on
+    the URL line ("Visit"), and the safety rule would then refuse the lot.
+    ``bbox`` is the union, for crops and display only."""
     bbox: tuple[int, int, int, int]
     lines: list[str]
     reasons: list[str]
     conflicts: list[str] = field(default_factory=list)
     kind: str = "block"            # "block" (whole lines) or "words" (URL words only)
+    boxes: list[tuple[int, int, int, int]] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.boxes:
+            self.boxes = [self.bbox]
 
     @property
     def safe(self) -> bool:
@@ -91,8 +101,8 @@ class PagePlan:
     def erased(self, box: tuple[int, int, int, int]) -> bool:
         """Whether a word box lies (by its centre) inside an applied region."""
         cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        return any(r.bbox[0] <= cx <= r.bbox[2] and r.bbox[1] <= cy <= r.bbox[3]
-                   for r in self.applied_regions)
+        return any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3]
+                   for r in self.applied_regions for b in r.boxes)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -233,8 +243,10 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
         parts = [(l, _erase_part(l, labels)) for l in group]
         missing = [l.text for l, part in parts if part is None]
         parts = [(l, part) for l, part in parts if part is not None]
+        boxes = [part[0] for _, part in parts]
         region = Region(
-            bbox=_union([part[0] for _, part in parts]) if parts else _union([l.bbox for l in group]),
+            bbox=_union(boxes) if boxes else _union([l.bbox for l in group]),
+            boxes=boxes or [_union([l.bbox for l in group])],
             lines=[part[1] for _, part in parts] + missing,
             reasons=sorted({l.reason for l in group if l.reason}),
             kind="words" if all(l.reason.startswith("domain:") for l in group) else "block")
@@ -249,14 +261,21 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
             continue
         outsiders = [l for l in lines if id(l) not in members]
         others = [b for l in outsiders for b in l.real_words] + kept_here
-        for p in (pad, 0):
-            box = (max(0, region.bbox[0] - p), max(0, region.bbox[1] - p),
-                   min(width, region.bbox[2] + p), min(height, region.bbox[3] + p))
-            hits = [b for b in others if _intersects(b, box)]
-            if not hits:
-                region.bbox, region.conflicts = box, []
-                break
-            region.conflicts = [f"touches {len(hits)} word(s) of real text"]
+        final = []
+        for raw in region.boxes:
+            # Padded if that is still clear of real text, else exact.
+            for p in (pad, 0):
+                box = (max(0, raw[0] - p), max(0, raw[1] - p),
+                       min(width, raw[2] + p), min(height, raw[3] + p))
+                hits = [b for b in others if _intersects(b, box)]
+                if not hits:
+                    final.append(box)
+                    break
+            else:
+                region.conflicts.append(f"touches {len(hits)} word(s) of real text")
+        if not region.conflicts:
+            region.boxes = final
+            region.bbox = _union(final)
         # Whole-line erasure is only for short lines: a long non-URL line that
         # matched is probably a question mentioning a keyword or number.
         long_lines = [t for t in region.lines if _alnum(t) > MAX_AD_LINE_ALNUM]

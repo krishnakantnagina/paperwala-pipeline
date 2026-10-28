@@ -73,8 +73,8 @@ def _rebuild_page(src: pymupdf.Document, out: pymupdf.Document, info, plan: Page
         draw = ImageDraw.Draw(img)
         white = 255 if img.mode == "L" else (255, 255, 255)
         for region in regions:
-            x0, y0, x1, y1 = region.bbox
-            draw.rectangle((x0, y0, x1 - 1, y1 - 1), fill=white)
+            for x0, y0, x1, y1 in region.boxes:
+                draw.rectangle((x0, y0, x1 - 1, y1 - 1), fill=white)
     if is_jpeg:
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=JPEG_QUALITY)
@@ -104,9 +104,9 @@ def _redact_page(src: pymupdf.Document, out: pymupdf.Document, plan: PagePlan,
     ox, oy = plan.origin
     sx, sy = plan.scale
     for region in regions:
-        x0, y0, x1, y1 = region.bbox
-        rect = pymupdf.Rect(ox + x0 * sx, oy + y0 * sy, ox + x1 * sx, oy + y1 * sy)
-        page.add_redact_annot(rect, fill=(1, 1, 1))
+        for x0, y0, x1, y1 in region.boxes:
+            rect = pymupdf.Rect(ox + x0 * sx, oy + y0 * sy, ox + x1 * sx, oy + y1 * sy)
+            page.add_redact_annot(rect, fill=(1, 1, 1))
     page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS,
                           graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
                           text=pymupdf.PDF_REDACT_TEXT_REMOVE)

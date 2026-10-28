@@ -151,7 +151,7 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
             render = plan.mode == "redact"
             raster = raster_page(dst_doc, dst_page, force_render=render)
             before = raster_page(src_doc, src_page, force_render=render)
-            boxes = [r.bbox for r in plan.applied_regions]
+            boxes = [b for r in plan.applied_regions for b in r.boxes]
             lossless = plan.mode == "rebuild" and "DCT" not in next(
                 i.filter for i in src_page.images if i.xref == src_page.scan_xref)
             problem = _pixel_check(before.image, raster.image, boxes, lossless)

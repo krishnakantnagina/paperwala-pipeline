@@ -62,7 +62,8 @@ def process_paper(src: str | Path, dst: str | Path, bl: Blocklist, paper_id: str
             after = result.rasters.get(plan.number)
             for i, region in enumerate(plan.regions):
                 path = region_crop(img, after, region.bbox,
-                                   cdir / f"p{plan.number + 1}_r{i + 1}.png", region.safe)
+                                   cdir / f"p{plan.number + 1}_r{i + 1}.png", region.safe,
+                                   region.boxes)
                 crops.append({"page": plan.number, "region": i, "path": path.name,
                               "applied": region.safe and not plan.drop})
             if plan.drop:

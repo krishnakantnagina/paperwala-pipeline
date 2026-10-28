@@ -145,3 +145,15 @@ def test_erased_content_catches_whole_url_line_erasure(bl):
     assert erased_content(plan, labels) == []          # only the URL word is erased
     plan.regions = [Region(bbox=q.bbox, lines=[q.text], reasons=["old behaviour"])]
     assert set(erased_content(plan, labels)) >= {"bee", "loud"}
+
+
+def test_url_line_above_phone_line_erases_exact_parts(bl):
+    # "Visit" stays; the URL words and the whole WhatsApp line go.
+    url = line("Visit www.pyqonline.com", 1500, x0=200, x1=700, bl=bl)
+    phone = line("WhatsApp 9300930012", 1555, x0=200, x1=600, bl=bl)
+    plan = plan_page(PAGE, SIZE, questions(bl) + [url, phone], bl)
+    assert len(plan.applied_regions) == 1
+    region = plan.applied_regions[0]
+    assert len(region.boxes) == 2 and plan.review == []
+    assert not plan.erased(url.words[0][2])          # "Visit"
+    assert plan.erased(url.words[1][2]) and all(plan.erased(b) for _, _, b in phone.words)

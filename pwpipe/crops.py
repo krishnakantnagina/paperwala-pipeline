@@ -11,15 +11,16 @@ MAX_WIDTH = 1400
 
 
 def region_crop(before: Image.Image, after: Image.Image | None, bbox, out_path: Path,
-                applied: bool) -> Path:
+                applied: bool, boxes=None) -> Path:
     x0, y0, x1, y1 = bbox
     box = (max(0, x0 - MARGIN), max(0, y0 - MARGIN),
            min(before.width, x1 + MARGIN), min(before.height, y1 + MARGIN))
     left = before.crop(box).convert("RGB")
     draw = ImageDraw.Draw(left)
     # Red = will be erased; orange = blocked by the safety rule.
-    draw.rectangle((x0 - box[0], y0 - box[1], x1 - box[0], y1 - box[1]),
-                   outline=(220, 30, 30) if applied else (240, 140, 0), width=4)
+    for bx0, by0, bx1, by1 in boxes or [bbox]:
+        draw.rectangle((bx0 - box[0], by0 - box[1], bx1 - box[0], by1 - box[1]),
+                       outline=(220, 30, 30) if applied else (240, 140, 0), width=4)
     panels = [left]
     if after is not None and after.size == before.size:
         panels.append(after.crop(box).convert("RGB"))
