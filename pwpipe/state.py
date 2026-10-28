@@ -34,7 +34,7 @@ from pathlib import Path
 
 from .db import Db
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MAX_ATTEMPTS = 5
 LEASE_SECONDS = 30 * 60
 BACKOFF_SECONDS = [60, 5 * 60, 30 * 60, 2 * 3600]   # after attempt 1, 2, 3, 4
@@ -91,6 +91,15 @@ _UPGRADES = {
     5: [
         # When the paper was last copied into the site's review queue.
         "ALTER TABLE papers ADD COLUMN review_pushed_at INTEGER",
+    ],
+    6: [
+        # Row-read budget (2026-10-28: 700M reads in one day blocked the whole
+        # Turso org). claim() walks this index in ORDER BY order and stops after
+        # LIMIT rows, so it reads ~n rows, not every ready paper. chain.py's
+        # "moved since t" counts filter events on ``at``.
+        "CREATE INDEX IF NOT EXISTS ix_papers_claim "
+        "ON papers (stage, status, priority DESC, attempts, updated_at)",
+        "CREATE INDEX IF NOT EXISTS ix_events_at ON events (at)",
     ],
 }
 
@@ -203,8 +212,23 @@ def seed_catalog(db: Db, catalog_dir: str | Path, catalog: str, chunk: int = 200
 def claim(db: Db, stage: str, owner: str, limit: int, catalog: str | None = None,
           lease_seconds: int = LEASE_SECONDS) -> list[dict]:
     """Lease up to ``limit`` papers that completed ``stage`` and are ready for
-    the next step. Expired leases of crashed jobs are reclaimed here too."""
+    the next step. Expired leases of crashed jobs are reclaimed here too.
+
+    Reads ~``limit`` rows, not the table: the ``ready`` papers are taken in
+    index order (ix_papers_claim) and the scan stops at LIMIT. It used to
+    ORDER BY ... random() over every ready paper (~28,000), once per claim
+    per worker, which is how the pipeline used 700M row reads in a day. Do
+    not put random() or any other unindexed sort back into the ORDER BY."""
     t = now()
+    params = {"o": owner, "until": t + lease_seconds, "t": t, "stage": stage, "cat": catalog,
+              "err": LEASE_EXPIRED}
+    take = """
+        UPDATE papers SET status = 'leased', lease_owner = :o, lease_until = :until,
+                          updated_at = :t,
+                          attempts = attempts + (CASE WHEN status = 'leased' THEN 1 ELSE 0 END),
+                          last_error = CASE WHEN status = 'leased' THEN :err ELSE last_error END
+        WHERE drive_id IN (%s)
+        RETURNING *"""
     rows = db.batch([
         # A paper whose worker died holding it has used an attempt. Without
         # this, a PDF that crashes the process would be retried forever.
@@ -213,22 +237,23 @@ def claim(db: Db, stage: str, owner: str, limit: int, catalog: str | None = None
             WHERE stage = :stage AND status = 'leased' AND lease_until < :t
               AND attempts + 1 >= :max AND (:cat IS NULL OR catalog = :cat)""",
          {"err": LEASE_EXPIRED, "t": t, "stage": stage, "max": MAX_ATTEMPTS, "cat": catalog}),
-        ("""
-        UPDATE papers SET status = 'leased', lease_owner = :o, lease_until = :until,
-                          updated_at = :t,
-                          attempts = attempts + (CASE WHEN status = 'leased' THEN 1 ELSE 0 END),
-                          last_error = CASE WHEN status = 'leased' THEN :err ELSE last_error END
-        WHERE drive_id IN (
-            SELECT drive_id FROM papers
-            WHERE stage = :stage
-              AND status IN ('ready', 'leased')
-              AND (lease_until IS NULL OR lease_until < :t)
-              AND (:cat IS NULL OR catalog = :cat)
-            ORDER BY priority DESC, attempts, updated_at, random()
-            LIMIT :n)
-        RETURNING *""",
-        {"o": owner, "until": t + lease_seconds, "t": t, "stage": stage, "cat": catalog,
-         "n": limit, "err": LEASE_EXPIRED})])[1]
+        # Leases that ran out (index ix_papers_work: stage, status, lease_until).
+        (take % """SELECT drive_id FROM papers INDEXED BY ix_papers_work
+                   WHERE stage = :stage AND status = 'leased' AND lease_until < :t
+                     AND (:cat IS NULL OR catalog = :cat)
+                   ORDER BY lease_until LIMIT :n""",
+         {**params, "n": limit})])[1]
+    if len(rows) < limit:
+        # ``lease_until`` on a ready paper is a retry backoff; those rows are
+        # skipped while walking the index, and there are few of them.
+        rows = rows + db.execute(
+            take % """SELECT drive_id FROM papers INDEXED BY ix_papers_claim
+                      WHERE stage = :stage AND status = 'ready'
+                        AND (lease_until IS NULL OR lease_until < :t)
+                        AND (:cat IS NULL OR catalog = :cat)
+                      ORDER BY priority DESC, attempts, updated_at
+                      LIMIT :n""",
+            {**params, "n": limit - len(rows)})
     return rows
 
 

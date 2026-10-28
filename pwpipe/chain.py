@@ -19,8 +19,15 @@ from .db import Db
 JOBS = ("work", "publish", "route")
 
 
+CAP = 1000
+
+
 def _count(db: Db, sql: str, params: dict | None = None) -> int:
-    return int(db.execute(sql, params or {})[0]["n"])
+    """How many rows ``sql`` (a plain ``SELECT 1 FROM ...``) matches, up to
+    CAP. Callers only ask "any left?" and "did this run move any?", so a count
+    that stops at CAP reads CAP rows at most, where COUNT(*) read every match
+    (every paper still waiting, every event of the run) on each call."""
+    return int(db.execute(f"SELECT COUNT(*) AS n FROM ({sql} LIMIT {CAP})", params or {})[0]["n"])
 
 
 def left_and_moved(db: Db, job: str, since: int, owner: str) -> tuple[int, int]:
@@ -29,29 +36,29 @@ def left_and_moved(db: Db, job: str, since: int, owner: str) -> tuple[int, int]:
     with several workers ("gha-123-" covers gha-123-1 ... gha-123-16)."""
     p = {"t": since, "o": f"{owner}%"}
     if job == "work":
-        return (_count(db, """SELECT COUNT(*) AS n FROM papers
+        return (_count(db, """SELECT 1 FROM papers
                               WHERE stage = 'discovered' AND status IN ('ready', 'leased')"""),
-                _count(db, """SELECT COUNT(*) AS n FROM events
+                _count(db, """SELECT 1 FROM events
                               WHERE at >= :t AND owner LIKE :o
                                 AND to_stage IN ('staged', 'approved')""", p))
     if job == "publish":
-        return (_count(db, """SELECT COUNT(*) AS n FROM papers
+        return (_count(db, """SELECT 1 FROM papers
                               WHERE stage = 'approved' AND status IN ('ready', 'leased')"""),
-                _count(db, """SELECT COUNT(*) AS n FROM events
+                _count(db, """SELECT 1 FROM events
                               WHERE at >= :t AND owner LIKE :o AND status = 'done'""", p))
     if job == "route":
         from .route_job import MAX_ATTEMPTS, ensure_table
         ensure_table(db)
         # Same filter as route_job._todo. 'waiting' rows (no AI quota) are
         # work left, but re-checking them without quota is not progress.
-        return (_count(db, """SELECT COUNT(*) AS n FROM papers p
+        return (_count(db, """SELECT 1 FROM papers p
                               LEFT JOIN routing r ON r.drive_id = p.drive_id
                               WHERE p.report_ref IS NOT NULL
                                 AND p.stage IN ('approved', 'published', 'live_verified')
                                 AND (r.drive_id IS NULL OR r.status = 'waiting'
                                      OR (r.status = 'error' AND r.attempts < :m))""",
                        {"m": MAX_ATTEMPTS}),
-                _count(db, """SELECT COUNT(*) AS n FROM routing
+                _count(db, """SELECT 1 FROM routing
                               WHERE updated_at >= :t AND status IN ('done', 'proposed')""", p))
     raise ValueError(f"unknown job {job!r}; expected one of {JOBS}")
 

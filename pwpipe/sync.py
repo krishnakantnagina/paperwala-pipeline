@@ -183,6 +183,7 @@ def pull_reports(state_db: Db, live: Db, stats: SyncStats) -> None:
                   p.drive_link AS drive_link
            FROM paper_reports r JOIN pyq_papers p ON p.id = r.pyq_paper_id
            WHERE r.decision != '' AND r.synced = 0""")
+    index = publish.LinkIndex(live)    # one scan of pyq_papers, and only if needed
     for row in rows:
         who = f"admin:{row['decided_by']}"
         paper = _paper_for_site_link(state_db, row["drive_link"])
@@ -190,13 +191,14 @@ def pull_reports(state_db: Db, live: Db, stats: SyncStats) -> None:
             pid = paper["drive_id"]
             live_now = paper["stage"] in ("published", "live_verified")
             if row["decision"] == "restore_original" and live_now:
-                publish.unpublish(state_db, live, [pid], who, "student report: restore original")
+                publish.unpublish(state_db, live, [pid], who, "student report: restore original",
+                                  index)
                 state.decide(state_db, pid, ("staged", "review"), ("staged", "done"), who,
                              "kept original after a student report")
                 stats.reports_restored += 1
             elif row["decision"] == "reclean":
                 if live_now:
-                    publish.unpublish(state_db, live, [pid], who, "student report: clean again")
+                    publish.unpublish(state_db, live, [pid], who, "student report: clean again", index)
                 stats.reports_recleaned += state.requeue(
                     state_db, who, "student report: clean again", drive_ids=[pid],
                     stages=("staged", "approved"), statuses=("review", "ready", "done"))

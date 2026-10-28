@@ -108,3 +108,55 @@ def test_limit_and_batches(dbs):
         approved(st, live, f"o{i}", f"n{i}")
     stats = go(st, live, limit=30)
     assert stats.published == 30
+
+
+class CountingDb(SqliteDb):
+    """Counts the statements that scan pyq_papers without a key lookup."""
+
+    def __init__(self, path):
+        super().__init__(path)
+        self.scans = 0
+
+    def execute(self, sql, params=None):
+        if "FROM pyq_papers" in sql and "WHERE id" not in sql:
+            self.scans += 1
+        return super().execute(sql, params)
+
+
+def test_publishing_scans_the_site_table_once_per_run_not_per_paper(tmp_path):
+    st = SqliteDb(str(tmp_path / "state.db"))
+    state.migrate(st)
+    live = CountingDb(str(tmp_path / "live.db"))
+    live.execute("CREATE TABLE pyq_papers (id INTEGER PRIMARY KEY, drive_link TEXT, "
+                 "preview_link TEXT)")
+    for i in range(45):
+        approved(st, live, f"o{i}", f"n{i}")
+    stats = go(st, live, limit=45)
+    assert stats.published == 45
+    assert live.scans == 1
+
+
+def test_unpublish_in_the_same_run_sees_the_switch_without_a_rescan(tmp_path):
+    st = SqliteDb(str(tmp_path / "state.db"))
+    state.migrate(st)
+    live = CountingDb(str(tmp_path / "live.db"))
+    live.execute("CREATE TABLE pyq_papers (id INTEGER PRIMARY KEY, drive_link TEXT, "
+                 "preview_link TEXT)")
+    approved(st, live, "orig1", "new1")
+    index = publish.LinkIndex(live)
+    row = index.rows_linking("orig1")
+    assert publish.switch_rows(live, row, "new1", index) == [row[0]["id"]]
+    assert index.rows_linking("orig1") == [] and len(index.rows_linking("new1")) == 1
+    assert publish.restore_rows(live, "orig1", "new1", index) == 1
+    assert len(index.rows_linking("orig1")) == 1 and index.rows_linking("new1") == []
+    assert live.scans == 1
+    assert live.execute("SELECT drive_link FROM pyq_papers")[0]["drive_link"] == \
+        publish.view_link("orig1")
+
+
+def test_index_is_not_read_until_something_needs_it(tmp_path):
+    live = CountingDb(str(tmp_path / "live.db"))
+    live.execute("CREATE TABLE pyq_papers (id INTEGER PRIMARY KEY, drive_link TEXT, "
+                 "preview_link TEXT)")
+    publish.LinkIndex(live)
+    assert live.scans == 0

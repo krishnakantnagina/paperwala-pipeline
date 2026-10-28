@@ -18,6 +18,7 @@ After each batch the site itself must still answer, or the run stops.
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -72,14 +73,61 @@ def site_answers(site_url: str) -> bool:
         return False
 
 
-def _rows_linking(live: Db, file_id: str) -> list[dict]:
-    return live.execute(
-        "SELECT id, drive_link, preview_link FROM pyq_papers "
-        "WHERE instr(drive_link, :p) > 0 OR instr(preview_link, :p) > 0",
-        {"p": f"/d/{file_id}/"})
+_FILE_ID = re.compile(r"/d/([^/?#]+)/")
 
 
-def switch_rows(live: Db, rows: list[dict], new_id: str) -> list[int]:
+class LinkIndex:
+    """Every ``pyq_papers`` link, read once, keyed by Drive file id.
+
+    Finding the rows that link a file with ``WHERE instr(drive_link, ...)``
+    cannot use an index, so Turso reads all 41,024 rows for EVERY paper: 10,000
+    papers is ~400M row reads, most of a month's free quota (2026-10-28 the
+    pipeline's reads blocked the whole org and took the site down). One scan
+    per run, filled lazily on first use, serves every lookup after it.
+
+    The index follows our own writes (``relink``), so a later lookup in the same
+    run sees them. A row someone edits on the site meanwhile is caught by the
+    fence in ``switch_rows`` / ``restore_rows``, which compare the values read.
+    """
+
+    def __init__(self, live: Db):
+        self.live = live
+        self._rows: dict[int, dict] | None = None
+        self._by_file: dict[str, set[int]] = {}
+
+    def _load(self) -> None:
+        if self._rows is not None:
+            return
+        self._rows, self._by_file = {}, {}
+        for r in self.live.execute("SELECT id, drive_link, preview_link FROM pyq_papers"):
+            self._add(r)
+
+    @staticmethod
+    def _files(row: dict) -> set[str]:
+        return {m for col in ("drive_link", "preview_link")
+                for m in _FILE_ID.findall(row[col] or "")}
+
+    def _add(self, row: dict) -> None:
+        self._rows[row["id"]] = row
+        for fid in self._files(row):
+            self._by_file.setdefault(fid, set()).add(row["id"])
+
+    def rows_linking(self, file_id: str) -> list[dict]:
+        self._load()
+        return [dict(self._rows[i]) for i in sorted(self._by_file.get(file_id, ()))]
+
+    def relink(self, row_id: int, drive_link: str, preview_link: str) -> None:
+        """Record that we changed this row's links."""
+        self._load()
+        old = self._rows.get(row_id)
+        if old:
+            for fid in self._files(old):
+                self._by_file.get(fid, set()).discard(row_id)
+        self._add({"id": row_id, "drive_link": drive_link, "preview_link": preview_link})
+
+
+def switch_rows(live: Db, rows: list[dict], new_id: str,
+                index: LinkIndex | None = None) -> list[int]:
     """Point rows at ``new_id``; each fenced on the values just read. Returns
     the ids that switched (a row changed in between is left alone)."""
     results = live.batch([
@@ -88,28 +136,41 @@ def switch_rows(live: Db, rows: list[dict], new_id: str) -> list[int]:
          {"v": view_link(new_id), "p": preview_link(new_id), "id": r["id"],
           "ov": r["drive_link"], "op": r["preview_link"]})
         for r in rows])
-    return [res[0]["id"] for res in results if res]
+    switched = [res[0]["id"] for res in results if res]
+    if index:
+        for rid in switched:
+            index.relink(rid, view_link(new_id), preview_link(new_id))
+    return switched
 
 
-def restore_rows(live: Db, original_id: str, cleaned_id: str) -> int:
+def restore_rows(live: Db, original_id: str, cleaned_id: str, index: LinkIndex) -> int:
     """Point every row that links the cleaned copy back at the original."""
-    rows = live.execute(
-        "UPDATE pyq_papers SET drive_link = :v, preview_link = :p "
-        "WHERE instr(drive_link, :c) > 0 OR instr(preview_link, :c) > 0 RETURNING id",
-        {"v": view_link(original_id), "p": preview_link(original_id),
-         "c": f"/d/{cleaned_id}/"})
-    return len(rows)
+    rows = index.rows_linking(cleaned_id)
+    if not rows:
+        return 0
+    results = live.batch([
+        ("UPDATE pyq_papers SET drive_link = :v, preview_link = :p "
+         "WHERE id = :id AND drive_link = :ov AND preview_link = :op RETURNING id",
+         {"v": view_link(original_id), "p": preview_link(original_id), "id": r["id"],
+          "ov": r["drive_link"], "op": r["preview_link"]})
+        for r in rows])
+    restored = [res[0]["id"] for res in results if res]
+    for rid in restored:
+        index.relink(rid, view_link(original_id), preview_link(original_id))
+    return len(restored)
 
 
 def publish_one(paper: dict, owner: str, state_db: Db, live: Db, drive: DriveClient,
-                stats: PublishStats, log, check_public=opens_publicly) -> None:
+                stats: PublishStats, log, check_public=opens_publicly,
+                index: LinkIndex | None = None) -> None:
+    index = index or LinkIndex(live)
     orig, new = paper["drive_id"], paper.get("output_file_id")
     if not new:
         raise ValueError("approved paper has no cleaned copy recorded")
 
-    rows = _rows_linking(live, orig)
+    rows = index.rows_linking(orig)
     if not rows:
-        already = _rows_linking(live, new)
+        already = index.rows_linking(new)
         if already:
             # A crash after switching but before recording: finish the record.
             state.advance(state_db, paper, owner, "published", status="done",
@@ -126,10 +187,10 @@ def publish_one(paper: dict, owner: str, state_db: Db, live: Db, drive: DriveCli
     if not check_public(new):
         raise ValueError("cleaned copy does not open without a login after sharing")
 
-    switched = switch_rows(live, rows, new)
+    switched = switch_rows(live, rows, new, index)
     if len(switched) != len(rows):
         # Someone edited a row in between: undo ours, let a person look.
-        restore_rows(live, orig, new)
+        restore_rows(live, orig, new, index)
         raise ValueError(f"only {len(switched)} of {len(rows)} site rows switched; restored")
 
     ok = state.advance(state_db, paper, owner, "published", status="done",
@@ -147,6 +208,7 @@ def run(state_db: Db, live: Db, drive: DriveClient, site_url: str, limit: int,
         check_site=site_answers) -> PublishStats:
     state.migrate(state_db)
     stats = PublishStats()
+    index = LinkIndex(live)
     deadline = time.monotonic() + max_minutes * 60
     if not check_site(site_url):
         raise PublishStop(f"site {site_url} does not answer; nothing published")
@@ -158,7 +220,7 @@ def run(state_db: Db, live: Db, drive: DriveClient, site_url: str, limit: int,
         done += len(batch)
         for paper in batch:
             try:
-                publish_one(paper, owner, state_db, live, drive, stats, log, check_public)
+                publish_one(paper, owner, state_db, live, drive, stats, log, check_public, index)
             except (DbError, DriveError) as exc:
                 state.release(state_db, paper, owner)
                 raise PublishStop(f"{type(exc).__name__}: {exc}") from exc
@@ -172,14 +234,16 @@ def run(state_db: Db, live: Db, drive: DriveClient, site_url: str, limit: int,
     return stats
 
 
-def unpublish(state_db: Db, live: Db, drive_ids: list[str], actor: str, reason: str) -> int:
+def unpublish(state_db: Db, live: Db, drive_ids: list[str], actor: str, reason: str,
+              index: LinkIndex | None = None) -> int:
     """Put the original links back for these papers and send them to review."""
+    index = index or LinkIndex(live)
     count = 0
     for pid in drive_ids:
         paper = state.get(state_db, pid)
         if not paper or paper["stage"] not in ("published", "live_verified"):
             continue
-        count += restore_rows(live, pid, paper["output_file_id"])
+        count += restore_rows(live, pid, paper["output_file_id"], index)
         state_db.batch([
             ("UPDATE papers SET stage = 'staged', status = 'review', "
              "review_reasons = :r, updated_at = :t WHERE drive_id = :d",
