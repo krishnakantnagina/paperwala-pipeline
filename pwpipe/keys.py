@@ -103,6 +103,10 @@ class KeyPool:
             key.retired = True
         elif status == 429:
             key.parked_until = self.clock() + (retry_after or DEFAULT_COOLDOWN)
+        elif status >= 500:
+            # Provider overloaded ("503 high demand"): rest the key briefly,
+            # it is not the key's fault and not a daily limit.
+            key.parked_until = self.clock() + (retry_after or 30)
 
     def status(self) -> list[dict]:
         return [{"key": k.tag, "used_today": k.used_today, "retired": k.retired,

@@ -33,7 +33,9 @@ from difflib import SequenceMatcher
 from .keys import KeyPool, QuotaExhausted
 
 HEADER_SHARE = 0.32                  # top of page 1 holds the paper's identity
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL_ROUTE", "gemini-2.5-flash")
+# The "-latest" alias follows Google's current Flash model: a pinned name
+# (gemini-2.5-flash) was withdrawn for new keys and answered 404.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL_ROUTE", "gemini-flash-latest")
 GROQ_MODEL = os.environ.get("GROQ_MODEL_ROUTE", "openai/gpt-oss-120b")
 GEMINI_PER_DAY = int(os.environ.get("GEMINI_PER_DAY", "200"))
 GROQ_PER_DAY = int(os.environ.get("GROQ_PER_DAY", "900"))
@@ -134,7 +136,10 @@ Header:
 
 def _post_json(url: str, body: dict, headers: dict, timeout: int = 60) -> tuple[int, dict]:
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Content-Type": "application/json", **headers})
+                                 # Groq's Cloudflare front refuses urllib's default
+                                 # User-Agent with "403 error code: 1010".
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": "paperwala-pipeline/1.0", **headers})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read())

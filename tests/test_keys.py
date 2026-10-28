@@ -62,3 +62,12 @@ def test_daily_count_is_shared_between_workers(tmp_path):
     with pytest.raises(QuotaExhausted):
         b.acquire()                        # the key's 3 uses today are spent
     assert "k1" not in str(db.execute("SELECT key FROM meta"))   # only a hash is stored
+
+
+def test_provider_overload_rests_key_briefly_not_retired():
+    p = pool(1)
+    p.report("k1", 503)
+    with pytest.raises(QuotaExhausted):
+        p.acquire()
+    p.clock.t += 31
+    assert p.acquire() == "k1" and not p.keys[0].retired
