@@ -88,20 +88,26 @@ def domain_allowed(domain: str, bl: Blocklist) -> bool:
     return any(domain == a or domain.endswith("." + a) for a in bl.allow_domains)
 
 
+_WEB_ONLY_TLDS = {"com", "net", "org", "online", "info", "site", "xyz"}
+
+
 def _plausible_domain(domain: str, text: str) -> bool:
     """An unlisted domain is erased only if it really looks like one.
 
     Prose produces fake ones (round 4 of the pilot): "independence.In the"
     (a missing space after a full stop) and OCR noise like "e.com".
     With www/http in front it is a URL. Otherwise the name before the dot
-    must have 3+ characters, and an ending written like a sentence start
-    (".In", ".Com") does not count; all-caps ("A2ZSUBJCTS.COM") does.
+    must have 3+ characters, its ending must be a web-only one (".com",
+    ".org"... - not ".in", ".ac" or ".co", which the MP Board run found
+    inside sentences: "vary.in period", "LUP.AC."), and an ending written
+    like a sentence start (".In", ".Com") does not count; all-caps
+    ("A2ZSUBJCTS.COM") does.
     """
     lowered = text.lower()
     label = domain.split(".")[0]
     if re.search(r"(?:https?:/*|www\.?)\s*" + re.escape(label), lowered):
         return True
-    if len(label) < 3:
+    if len(label) < 3 or domain.rsplit(".", 1)[-1] not in _WEB_ONLY_TLDS:
         return False
     m = re.search(re.escape(domain).replace(r"\.", r"\s*\.\s*"), text, re.IGNORECASE)
     if m:

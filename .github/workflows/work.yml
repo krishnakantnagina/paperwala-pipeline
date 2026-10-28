@@ -9,8 +9,8 @@ on:
   workflow_dispatch:
     inputs:
       catalog:
-        description: "Source to work on (blank = any)"
-        default: "mpboardonline.com"
+        description: "Source to work on (blank = every source)"
+        default: ""
       limit:
         description: "Papers in this run, across all workers"
         default: "50"

@@ -33,6 +33,7 @@ class SyncStats:
     kept_original: int = 0
     recleaned: int = 0
     moved: int = 0
+    dropped_stale: int = 0
     reports_restored: int = 0
     reports_recleaned: int = 0
     skipped: list[str] = field(default_factory=list)
@@ -103,6 +104,25 @@ def _mark_pushed(state_db: Db, drive_id: str) -> None:
     # updated_at is left alone: it says when the paper last changed.
     state_db.execute("UPDATE papers SET review_pushed_at = :t WHERE drive_id = :d",
                      {"t": state.now() + 1, "d": drive_id})
+
+
+def drop_stale_reviews(state_db: Db, live: Db, stats: SyncStats) -> None:
+    """Remove undecided queue entries whose paper is no longer waiting for a
+    person (re-cleaned since, approved elsewhere): a reviewer must never be
+    shown an outdated version."""
+    open_rows = live.execute("SELECT id, source_id FROM pipeline_review "
+                             "WHERE decision = '' AND kind = 'clean'")
+    for i in range(0, len(open_rows), 200):
+        chunk = open_rows[i:i + 200]
+        marks = ", ".join(f":s{n}" for n in range(len(chunk)))
+        waiting = {r["drive_id"] for r in state_db.execute(
+            f"SELECT drive_id FROM papers WHERE stage = 'staged' AND status = 'review' "
+            f"AND drive_id IN ({marks})", {f"s{n}": r["source_id"] for n, r in enumerate(chunk)})}
+        for r in chunk:
+            if r["source_id"] not in waiting:
+                stats.dropped_stale += len(live.execute(
+                    "DELETE FROM pipeline_review WHERE id = :i AND decision = '' RETURNING id",
+                    {"i": r["id"]}))
 
 
 # --- 2. decisions on cleaned papers ------------------------------------------
@@ -195,5 +215,6 @@ def run(state_db: Db, live: Db, drive, log=print) -> SyncStats:
         return stats
     pull_decisions(state_db, live, stats)
     pull_reports(state_db, live, stats)
+    drop_stale_reviews(state_db, live, stats)
     push_reviews(state_db, live, drive, stats)
     return stats

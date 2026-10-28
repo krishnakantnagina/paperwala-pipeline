@@ -126,3 +126,12 @@ def test_without_site_tables_nothing_happens(tmp_path):
     live = SqliteDb(str(tmp_path / "l.db"))
     s = sync.run(st, live, FakeDrive(), log=lambda *_: None)
     assert s.pushed == 0
+
+
+def test_entry_for_a_recleaned_paper_is_dropped(dbs):
+    st, live = dbs
+    add(st, live, ORIG)
+    sync.run(st, live, FakeDrive(), log=lambda *_: None)
+    state.requeue(st, "t", "new rules", drive_ids=[ORIG])
+    s = sync.run(st, live, FakeDrive(), log=lambda *_: None)
+    assert s.dropped_stale == 1 and live.execute("SELECT COUNT(*) n FROM pipeline_review")[0]["n"] == 0

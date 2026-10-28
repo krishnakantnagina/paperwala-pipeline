@@ -142,3 +142,14 @@ def test_prose_and_noise_are_not_promo_domains(bl, text):
 ])
 def test_real_unlisted_promo_domains_are_still_erased(bl, text):
     assert classify_line(text, bl)[0] == AD
+
+
+@pytest.mark.parametrize("text", [
+    "How do atomic radius vary.in period and in group?", "नाम लिखिए LUP.AC. नाम", "see fig.co for",
+])
+def test_sentence_endings_are_not_promo_domains(bl, text):
+    assert classify_line(text, bl)[0] not in (AD, SUSPECT)
+
+
+def test_in_domain_with_www_is_still_promo(bl):
+    assert classify_line("visit www.examnotes.in", bl)[0] == AD
