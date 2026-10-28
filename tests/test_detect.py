@@ -157,3 +157,22 @@ def test_url_line_above_phone_line_erases_exact_parts(bl):
     assert len(region.boxes) == 2 and plan.review == []
     assert not plan.erased(url.words[0][2])          # "Visit"
     assert plan.erased(url.words[1][2]) and all(plan.erased(b) for _, _, b in phone.words)
+
+
+def test_ad_block_with_garbled_url_is_still_erased(bl):
+    # Gate 1, RGPV: the pyqonline URL line was unreadable, the rest remained.
+    block = [
+        line("Whatsapp @ 930093002", 1500, bl=bl),
+        line("Your old paper & get 0/-", 1555, bl=bl),
+        line("पुराने पेपर्स भेजे और 0 रुपये पायें,", 1610, bl=bl),
+        line("Paytm or Google Pay से", 1665, bl=bl),
+    ]
+    plan = plan_page(PAGE, SIZE, questions(bl) + block, bl)
+    assert len(plan.applied_regions) == 1 and plan.review == []
+    assert all(plan.erased(b) for l in block for _, _, b in l.words)
+
+
+def test_mcq_options_naming_apps_are_not_an_ad(bl):
+    opts = [line("(a) Email (b) Fax", 1500, bl=bl), line("(c) Telegram (d) WhatsApp", 1555, bl=bl)]
+    plan = plan_page(PAGE, SIZE, questions(bl) + opts, bl)
+    assert plan.applied_regions == []

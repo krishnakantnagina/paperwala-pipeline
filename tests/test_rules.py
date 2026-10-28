@@ -72,7 +72,8 @@ def test_allowlisted_site_in_a_question_survives(bl):
 
 
 def test_weak_and_plain(bl):
-    assert classify_line("अपने पुराने पेपर्स भेजे और 10 रुपये से 40 रुपये तक पायें", bl)[0] in (SUSPECT, WEAK)
+    # An approved line of the pyqonline block since Gate 1.
+    assert classify_line("अपने पुराने पेपर्स भेजे और 10 रुपये से 40 रुपये तक पायें", bl)[0] == AD
     assert classify_line("प्रश्न 19 दिए गए संकुल यौगिकों के IUPAC नाम लिखिए", bl)[0] is None
 
 

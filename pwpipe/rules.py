@@ -56,7 +56,7 @@ def line_key(text: str) -> str:
 def find_phones(text: str) -> list[str]:
     fixed = fix_digits(text)
     # Phones are printed as "93009 30012" or "9300-930012".
-    collapsed = re.sub(r"(?<=\d)[\s\-.]+(?=\d)", "", fixed)
+    collapsed = re.sub(r"(?<=\d)[\s\-]+(?=\d)", "", fixed)
     return _PHONE_RE.findall(collapsed)
 
 

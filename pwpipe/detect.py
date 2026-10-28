@@ -162,6 +162,7 @@ def _clusters(nodes: list[OcrLine], max_gap: float) -> list[list[OcrLine]]:
 
 def _url_word(text: str, labels: list[str]) -> bool:
     c = re.sub(r"[^a-z0-9]", "", text.lower())
+    labels = [re.sub(r"[^a-z0-9]", "", l) for l in labels]
     if "www" in c or "http" in c:
         return True
     if any(len(l) >= 6 and l in c for l in labels):
@@ -207,6 +208,22 @@ def _erase_part(line: OcrLine, labels: list[str]):
     return (_union([words[i][2] for i in order]), " ".join(words[i][0] for i in order), kept)
 
 
+# The "send your old paper & get 10-40 rupees" block's own words. When OCR
+# garbles its URL line, the block has no confirmed ad line left to anchor it
+# (4 RGPV papers in Gate 1), but this pair of phrases never occurs in a
+# question: an "old paper" line next to a payment/contact line.
+_OLD_PAPER = ("old paper", "पुराने पेपर")
+_PROMO_PARTNER = ("paytm", "google pay", "whatsapp", "phonepe")
+
+
+def _promo_signature(group: list[OcrLine]) -> bool:
+    texts = [l.text.lower() for l in group]
+    has_old = any(any(k in t for k in _OLD_PAPER) for t in texts)
+    has_partner = any(any(k in t for k in _PROMO_PARTNER) and not any(o in t for o in _OLD_PAPER)
+                      for t in texts)
+    return len(group) >= 2 and has_old and has_partner
+
+
 def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine],
               bl: Blocklist) -> PagePlan:
     plan = PagePlan(number=info.number, mode="rebuild" if info.is_scan else "redact",
@@ -225,7 +242,7 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
     members: set[int] = set()
     protected: list[list] = []
     for group in _clusters(flagged, max_gap):
-        if not any(l.kind == AD for l in group):
+        if not any(l.kind == AD for l in group) and not _promo_signature(group):
             continue
         span = _union([l.bbox for l in group])
         in_group = {id(l) for l in group}
