@@ -22,9 +22,9 @@ import numpy as np
 from PIL import Image
 
 from .blocklist import Blocklist
-from .detect import (REAL_WORD_CONF, PagePlan, _alnum, _tld_word, _url_word,
-                     classify_lines, line_labels)
-from .ocr import DEFAULT_LANGS, group_lines, ocr_image
+from .detect import (REAL_WORD_CONF, PagePlan, _alnum, _erase_part, classify_lines,
+                     line_labels)
+from .ocr import DEFAULT_LANGS, OTSU, group_lines, ocr_image
 from .pdf import PdfInfo, analyze, largest_image, open_pdf, raster_page
 from .stamp import STAMP_TEXT
 from .rules import AD, SUSPECT, WEAK, _domain_label, line_key
@@ -79,6 +79,11 @@ def _identical_outside(before: Image.Image, after: Image.Image, boxes, ignore=()
     return bool(np.array_equal(a[keep], b[keep]))
 
 
+def _inside_any(box, boxes) -> bool:
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    return any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in boxes)
+
+
 def _proven(proven, before, after, boxes, ignore) -> bool:
     # Computed only when needed: most pages never ask.
     if proven is None:
@@ -117,6 +122,13 @@ def _pixel_check(before: Image.Image, after: Image.Image, boxes, lossless: bool,
     return None
 
 
+def _url_words(line, labels) -> set[str]:
+    """The words of a URL line that are its URL: the planner's own pick
+    (split names and garbled middles included), else none."""
+    part = _erase_part(line, labels)
+    return set(part[1].split(" ")) if part else set()
+
+
 def erased_content(plan: PagePlan, labels: list[str]) -> list[str]:
     """Paper words the plan would erase. Must be empty.
 
@@ -127,14 +139,18 @@ def erased_content(plan: PagePlan, labels: list[str]) -> list[str]:
     check cannot see (it verifies the cleaner against the plan).
     """
     bad = []
+    # Words a forced erase clips were accepted by the owner (detect.Region.forced).
+    forced = [b for r in plan.applied_regions if r.forced for b in r.boxes]
     for line in plan.lines:
         for text, conf, box in line.words:
             if conf < REAL_WORD_CONF or _alnum(text) < 2 or not plan.erased(box):
                 continue
+            cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+            if any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in forced):
+                continue
             if line.kind not in (AD, SUSPECT, WEAK):
                 bad.append(text)
-            elif line.reason.startswith("domain:") and not (
-                    _url_word(text, line_labels(line, labels)) or _tld_word(text)):
+            elif line.reason.startswith("domain:") and text not in _url_words(line, labels):
                 bad.append(text)
     return bad
 
@@ -200,9 +216,22 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
                 if not has_mark:
                     result.fail(f"page {plan.number}: paperwala.org mark missing")
 
-            lines = classify_lines(group_lines(ocr_image(after_img, langs)), bl)
-
+            words = ocr_image(after_img, langs, threshold=plan.ocr_threshold)
+            if render:
+                # Our own mark is in a rendered page, and OCR misreads it
+                # ("pape rwala.org", "0806 rwala.org") into an unknown site:
+                # 6% of the review queue on 2026-10-28.
+                words = [w for w in words if not _inside_any(w.bbox, plan.stamp_boxes)]
+            lines = classify_lines(group_lines(words), bl)
             ad_lines = [l for l in lines if l.kind == AD]
+            if plan.ocr_threshold != OTSU:
+                # Read with Sauvola for the words; ads are looked for with
+                # both readings, as they were found with both.
+                otsu = ocr_image(after_img, langs)
+                if render:
+                    otsu = [w for w in otsu if not _inside_any(w.bbox, plan.stamp_boxes)]
+                ad_lines += [l for l in classify_lines(group_lines(otsu), bl) if l.kind == AD]
+
             if ad_lines and after_img.size == tuple(plan.raster_size):
                 result.leftover_ads[plan.number] = ad_lines
             ads = [l.text for l in ad_lines]

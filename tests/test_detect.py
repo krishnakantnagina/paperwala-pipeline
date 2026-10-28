@@ -49,14 +49,17 @@ def test_ad_block_found_whole_and_safe(bl):
     assert plan.review == [] and not plan.drop
 
 
-def test_ad_touching_question_is_conflict_not_erased(bl):
+def test_ad_touching_question_is_erased_anyway(bl):
+    # Owner's rule (2026-10-28): an identified ad goes even if it clips the
+    # question it touches; exact boxes, never padded; recorded, not reviewed.
     lines = questions(bl, n=12, start=200)
-    # Ad pressed right under the last question, overlapping its box.
-    lines += ad_block(bl, y=lines[-1].bbox[1] + 20)
+    lines += ad_block(bl, y=lines[-1].bbox[1] + 20)    # overlapping the last question
     plan = plan_page(PAGE, SIZE, lines, bl)
-    assert plan.regions and not plan.regions[0].safe
-    assert "conflict" in plan.review
-    assert plan.applied_regions == []
+    (region,) = plan.applied_regions
+    assert region.forced and region.clipped >= 1
+    assert "conflict" not in plan.review
+    ad_top = min(l.bbox[1] for l in lines[-5:])
+    assert all(b[1] >= ad_top - 20 for b in region.boxes)   # nothing above the ad (pad <= 16)
 
 
 def test_url_stamped_beside_question_erases_only_url_words(bl):
@@ -71,12 +74,15 @@ def test_url_stamped_beside_question_erases_only_url_words(bl):
     assert "conflict" not in plan.review
 
 
-def test_url_words_touching_another_line_go_to_review(bl):
-    # Overlapping the question above (it spans y 860-900): refused.
+def test_url_words_touching_another_line_are_erased_exactly(bl):
+    # Overlapping the question above (it spans y 860-900): only the URL
+    # word's own box goes, the rest of the line stays.
     q = line("Q7. Read the passage published at www.pyqonline.com and answer the "
              "following questions about photosynthesis in detail", 880, bl=bl)
     plan = plan_page(PAGE, SIZE, questions(bl) + [q], bl)
-    assert plan.applied_regions == [] and "conflict" in plan.review
+    (region,) = plan.applied_regions
+    url_box = next(b for t, _, b in q.words if "pyqonline" in t)
+    assert region.forced and region.boxes == [url_box]
 
 
 def test_long_line_with_phone_is_never_narrowed(bl):
@@ -190,12 +196,14 @@ def test_url_between_hindi_lines_is_trimmed_off_their_matras(bl):
     assert box[1] > 800 and box[3] < 829 and box[3] - box[1] >= 0.6 * 40
 
 
-def test_url_beside_a_word_on_its_own_line_is_not_trimmed(bl):
-    # A real neighbour on the same line is never cut around: still review.
+def test_url_beside_a_word_on_its_own_line_is_erased_exactly(bl):
+    # A neighbour on the same line is not trimmed around; the exact URL box
+    # is erased (owner's rule) and may clip it.
     q = line("Q7. Name it www.pyqonline.com", 880, x0=200, x1=600, bl=bl)
     beside = line("photosynthesis", 885, x0=590, x1=800)
     plan = plan_page(PAGE, SIZE, questions(bl) + [q, beside], bl)
-    assert plan.applied_regions == [] and "conflict" in plan.review
+    (region,) = plan.applied_regions
+    assert region.forced and region.boxes[0][2] <= 600
 
 
 def test_url_found_by_another_reading_replaces_its_garbled_shadow(bl):
@@ -210,3 +218,35 @@ def test_url_found_by_another_reading_replaces_its_garbled_shadow(bl):
     plan = plan_page(PAGE, SIZE, lines, bl)
     assert len(plan.applied_regions) == 1 and plan.review == []
     assert merge_found_ads(lines, [found], bl) == 0   # known now: not added twice
+
+
+def test_site_name_split_in_two_is_erased_whole(bl):
+    # Assam maths paper: "assamboard.com" read as "...assam" + "board.com".
+    q = line("are equal. httpsi//www.assam board.com", 1100, x0=130, x1=730, bl=bl)
+    plan = plan_page(PAGE, SIZE, questions(bl) + [q], bl)
+    (region,) = plan.applied_regions
+    assert region.lines == ["httpsi//www.assam board.com"]
+    assert region.boxes[0][0] > 280                    # "are equal." stays
+
+
+def test_garbled_middle_of_a_url_is_part_of_it(bl):
+    # BU: a vertical URL read as "http" + "\EEE." + "onlinebu.com".
+    q = line('http "\\EEE. onlinebu.com', 1100, x0=600, x1=900, bl=bl)
+    plan = plan_page(PAGE, SIZE, questions(bl) + [q], bl)
+    (region,) = plan.applied_regions
+    assert region.lines == ['http "\\EEE. onlinebu.com']
+
+
+def test_garbled_word_is_not_taken_without_url_words_both_sides(bl):
+    q = line("Q13. Define EEE. www.pyqonline.com", 1100, x0=130, x1=730, bl=bl)
+    plan = plan_page(PAGE, SIZE, questions(bl) + [q], bl)
+    (region,) = plan.applied_regions
+    assert region.lines == ["www.pyqonline.com"]
+
+
+def test_ink_smear_boxed_as_a_word_does_not_block_a_url(bl):
+    # MP Board: OCR boxed a 464 px smear as one word overlapping the URL.
+    url = line("https://www.mpboardonline.com", 2263, x0=551, x1=1125, bl=bl)
+    smear = OcrLine("रैक", (106, 1859, 570, 2323), 57, None, "", [("रैक", 57, (106, 1859, 570, 2323))])
+    plan = plan_page(PAGE, SIZE, questions(bl) + [smear, url], bl)
+    assert len(plan.applied_regions) == 1 and "conflict" not in plan.review

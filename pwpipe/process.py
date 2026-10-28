@@ -13,8 +13,8 @@ from . import __version__
 from .blocklist import Blocklist
 from .clean import clean_pdf
 from .crops import page_thumb, region_crop
-from .detect import classify_lines, merge_found_ads, plan_page
-from .ocr import DEFAULT_LANGS, group_lines, ocr_image
+from .detect import AD, LOW_TEXT_WORDS, classify_lines, merge_found_ads, plan_page
+from .ocr import DEFAULT_LANGS, OTSU, SAUVOLA, group_lines, ocr_image
 from .pdf import analyze, file_sha256, open_pdf, raster_page
 from .ruled import struck_through_ads
 from .stamp import find_stamp_boxes
@@ -24,13 +24,32 @@ from .verify import verify
 MAX_SECOND_LOOKS = 2
 
 
+def _real_words(lines) -> int:
+    return sum(len(l.real_words) for l in lines)
+
+
+def _read(img, langs: str, bl: Blocklist):
+    """OCR a page; if that finds almost nothing, read it again with Sauvola
+    thresholding and keep whichever reading found more real words."""
+    lines = classify_lines(group_lines(ocr_image(img, langs)), bl)
+    if _real_words(lines) >= LOW_TEXT_WORDS:
+        return OTSU, lines
+    again = classify_lines(group_lines(ocr_image(img, langs, threshold=SAUVOLA)), bl)
+    if _real_words(again) <= _real_words(lines):
+        return OTSU, lines
+    # Each reading sees what the other misses: Sauvola read the BU paper's
+    # questions but not the URL printed on white between them.
+    merge_found_ads(again, [l for l in lines if l.kind == AD], bl)
+    return SAUVOLA, again
+
+
 def _plans(pages, bl: Blocklist) -> list:
     plans = []
-    for page, (size, origin, scale), lines, stamps in pages:
+    for page, (size, origin, scale, threshold), lines, stamps in pages:
         for l in lines:
             l.region = None
         plan = plan_page(page, size, lines, bl)
-        plan.origin, plan.scale = origin, scale
+        plan.origin, plan.scale, plan.ocr_threshold = origin, scale, threshold
         if not plan.drop:
             plan.stamp_boxes = stamps
         plans.append(plan)
@@ -48,7 +67,7 @@ def process_paper(src: str | Path, dst: str | Path, bl: Blocklist, paper_id: str
     try:
         for page in info.pages:
             raster = raster_page(doc, page)
-            lines = classify_lines(group_lines(ocr_image(raster.image, langs)), bl)
+            threshold, lines = _read(raster.image, langs, bl)
             # URLs with a printed rule through them read as nothing above.
             if merge_found_ads(lines, struck_through_ads(raster.image, bl, langs), bl):
                 second_looks.append(f"page {page.number}: URL under a printed rule")
@@ -56,7 +75,8 @@ def process_paper(src: str | Path, dst: str | Path, bl: Blocklist, paper_id: str
             stamps = []
             if stamp and not plan.drop and "rotated_page" not in plan.review:
                 stamps = find_stamp_boxes(raster.image, [b for l in lines for _, _, b in l.words])
-            pages.append((page, (raster.image.size, raster.origin, raster.scale), lines, stamps))
+            pages.append((page, (raster.image.size, raster.origin, raster.scale, threshold),
+                          lines, stamps))
             # Keep pixels only where a crop will be drawn; a 30-page scan held
             # whole would cost hundreds of MB.
             if plan.regions or plan.suspects:

@@ -96,8 +96,16 @@ def tessdata_dir() -> Path | None:
     return None
 
 
+# Tesseract's thresholding_method: 0 = global Otsu (its default), 2 = Sauvola,
+# which thresholds each neighbourhood on its own. Global Otsu fails on a grey
+# scan inside white margins (BU papers): the threshold lands between grey and
+# white, the whole grey area turns black, and only the URL printed on white is
+# read - 2 words of a 250-word page.
+OTSU, SAUVOLA = 0, 2
+
+
 def ocr_image(img: Image.Image, langs: str = DEFAULT_LANGS, psm: int = 3,
-              timeout: int = 600) -> list[Word]:
+              timeout: int = 600, threshold: int = OTSU) -> list[Word]:
     if img.mode not in ("L", "RGB"):
         img = img.convert("L")
     buf = io.BytesIO()
@@ -110,6 +118,8 @@ def ocr_image(img: Image.Image, langs: str = DEFAULT_LANGS, psm: int = 3,
     # dir, the pinned one has none, and tesseract then falls back to plain
     # text with only a warning.
     cmd += ["-c", "tessedit_create_tsv=1"]
+    if threshold != OTSU:
+        cmd += ["-c", f"thresholding_method={threshold}"]
     try:
         proc = subprocess.run(cmd, input=buf.getvalue(), capture_output=True,
                               timeout=timeout)

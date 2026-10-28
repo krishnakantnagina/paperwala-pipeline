@@ -68,6 +68,11 @@ class Region:
     conflicts: list[str] = field(default_factory=list)
     kind: str = "block"            # "block" (whole lines) or "words" (URL words only)
     boxes: list[tuple[int, int, int, int]] = field(default_factory=list)
+    # Erased although its box touches other words: the owner's rule
+    # (2026-10-28) - an identified ad goes even if it clips the question
+    # beside it. ``clipped`` counts the words it touched.
+    forced: bool = False
+    clipped: int = 0
 
     def __post_init__(self):
         if not self.boxes:
@@ -92,6 +97,9 @@ class PagePlan:
     # PDF point = origin + raster pixel * scale (see pdf.Raster).
     origin: tuple[float, float] = (0.0, 0.0)
     scale: tuple[float, float] = (1.0, 1.0)
+    # How Tesseract thresholded this page (ocr.OTSU / ocr.SAUVOLA); the
+    # verifier reads the cleaned page the same way.
+    ocr_threshold: int = 0
     # Raster boxes for the "paperwala.org" marks (stamp.py): top and bottom,
     # each only if that edge has room.
     stamp_boxes: list[tuple[int, int, int, int]] = field(default_factory=list)
@@ -204,6 +212,26 @@ def _tld_word(text: str) -> bool:
     return re.sub(r"[^a-z]", "", text.lower()) in ("com", "corn", "in", "net", "co")
 
 
+_TAIL = re.compile(r"^([a-z0-9-]+)\.(?:com|corn|in|net|org|co)\W*$")
+
+
+def _split_tail(prev: str, nxt: str, labels: list[str]) -> bool:
+    """``nxt`` is the rest of a site name OCR split in two:
+    "https://www.assam" + "board.com" (an Assam paper, 2026-10-28)."""
+    m = _TAIL.match(nxt.lower())
+    if not m:
+        return False
+    joined = re.sub(r"[^a-z0-9]", "", prev.lower()) + m.group(1).replace("-", "")
+    return any(len(l) >= 6 and l in joined for l in
+               (re.sub(r"[^a-z0-9]", "", l) for l in labels))
+
+
+def _garbled_middle(text: str) -> bool:
+    """A word OCR mangled inside a URL ("EEE." for "www."): short, no
+    Devanagari. Only ever taken when URL words sit on both sides of it."""
+    return len(text) <= 12 and not re.search(r"[ऀ-ॿ]", text)
+
+
 def line_labels(line, labels: list[str]) -> list[str]:
     """Domain labels to recognise URL words by: the blocklist's, plus the
     domain this line was flagged for (it may be one nobody listed)."""
@@ -226,8 +254,13 @@ def _erase_part(line: OcrLine, labels: list[str]):
     words = line.words
     labels = line_labels(line, labels)
     picked = {i for i, (t, _, _) in enumerate(words) if _url_word(t, labels)}
-    # ".com" OCR'd as its own word right after the URL.
-    picked |= {i + 1 for i in picked if i + 1 < len(words) and _tld_word(words[i + 1][0])}
+    # ".com" OCR'd as its own word right after the URL, or the rest of a
+    # split site name ("...assam" "board.com").
+    picked |= {i + 1 for i in picked if i + 1 < len(words) and (
+        _tld_word(words[i + 1][0]) or _split_tail(words[i][0], words[i + 1][0], labels))}
+    # One garbled word between two URL words is the URL's middle.
+    picked |= {i + 1 for i in picked if i + 2 in picked and i + 1 not in picked
+               and _garbled_middle(words[i + 1][0])}
     if not picked:
         return None
     order = sorted(picked)
@@ -349,7 +382,11 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
         if region.conflicts:
             continue
         outsiders = [l for l in lines if id(l) not in members]
-        others = [b for l in outsiders for b in l.real_words] + kept_here
+        # A "word" taller than a few lines is a smear or a stamp OCR boxed as
+        # text (a 464 px blob beside an MP Board URL, 2026-10-28), not content.
+        tall = 4 * line_h
+        others = [b for b in [b for l in outsiders for b in l.real_words] + kept_here
+                  if b[3] - b[1] <= tall]
         final = []
         for raw in region.boxes:
             # Padded if that is still clear of real text, else exact, else
@@ -366,7 +403,12 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
                 if box and not any(_intersects(b, box) for b in others):
                     final.append(box)
                 else:
-                    region.conflicts.append(f"touches {len(hits)} word(s) of real text")
+                    # Owner's rule: erase the ad's exact box anyway. Exact,
+                    # never padded, so as little as possible is clipped.
+                    exact = (max(0, raw[0]), max(0, raw[1]), min(width, raw[2]), min(height, raw[3]))
+                    final.append(exact)
+                    region.forced = True
+                    region.clipped += sum(1 for b in others if _intersects(b, exact))
         if not region.conflicts:
             region.boxes = final
             region.bbox = _union(final)
