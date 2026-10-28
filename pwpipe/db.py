@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +29,61 @@ Rows = list[dict[str, Any]]
 
 class DbError(RuntimeError):
     pass
+
+
+class ReadBudgetExceeded(DbError):
+    """The run has read as many rows as it was allowed. A DbError, so every
+    job already treats it as "give the paper back and stop the run"."""
+
+
+class ReadMeter:
+    """Rows Turso reports reading for this process, with a fuse.
+
+    Turso's free plan allows 500M row reads a month and blocks EVERY database in
+    the org once any metric is over (2026-10-28: the pipeline read 700M in a day
+    and the live site went down). Each statement's reply carries ``rows_read``,
+    so a run can count what it costs and stop at ``PIPELINE_READ_BUDGET`` (rows,
+    default 500,000 per process; 0 turns the fuse off). Normal use is a few
+    thousand: a claim reads about as many rows as it takes."""
+
+    DEFAULT = 500_000
+
+    def __init__(self, budget: int | None = None):
+        if budget is None:
+            budget = int(os.environ.get("PIPELINE_READ_BUDGET", self.DEFAULT))
+        self.budget = budget
+        self.read = self.written = self.statements = 0
+        self._lock = threading.Lock()
+
+    def add(self, read: int, written: int, statements: int = 1) -> None:
+        with self._lock:
+            self.read += read
+            self.written += written
+            self.statements += statements
+
+    def check(self) -> None:
+        if self.budget and self.read >= self.budget:
+            raise ReadBudgetExceeded(
+                f"read budget reached: {self.read:,} rows read (limit {self.budget:,}, "
+                f"PIPELINE_READ_BUDGET). Stopping so the free Turso quota is not used up.")
+
+    def summary(self) -> str:
+        return (f"database use this run: {self.read:,} rows read, {self.written:,} written, "
+                f"{self.statements:,} statements (read limit {self.budget:,})")
+
+
+METER = ReadMeter()
+
+
+def _count_use(result: dict) -> None:
+    """Add the rows a reply says it read/wrote (execute: one result; batch: one per step)."""
+    resp = (result or {}).get("response") or {}
+    res = resp.get("result")
+    if not res:                      # the trailing "close" reply carries no result
+        return
+    parts = [res] + [p for p in (res.get("step_results") or []) if p]
+    METER.add(sum(int(p.get("rows_read") or 0) for p in parts),
+              sum(int(p.get("rows_written") or 0) for p in parts))
 
 
 class Db:
@@ -136,6 +192,7 @@ class TursoDb(Db):
         return cls(url, token)
 
     def _post(self, requests: list[dict]) -> list[dict]:
+        METER.check()
         body = json.dumps({"requests": requests + [{"type": "close"}]}).encode()
         delay = 1.0
         for attempt in range(self.RETRIES):
@@ -143,7 +200,10 @@ class TursoDb(Db):
                 "Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    return json.loads(resp.read())["results"]
+                    results = json.loads(resp.read())["results"]
+                for r in results:
+                    _count_use(r)
+                return results
             except urllib.error.HTTPError as exc:
                 if exc.code != 429 and exc.code < 500:
                     detail = exc.read().decode("utf-8", "replace")[:300]

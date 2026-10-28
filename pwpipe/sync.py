@@ -45,25 +45,31 @@ def tables_ready(live: Db) -> bool:
     return len(rows) == 2
 
 
-def _site_row(live: Db, file_id: str) -> dict | None:
+def _site_row(live: Db, file_id: str, index: "publish.LinkIndex") -> dict | None:
+    """The site row linking this file. Found through the link index (one scan
+    of pyq_papers per run): ``instr()`` cannot use an index, so asking the
+    database per paper read up to 41,024 rows each time."""
+    linked = index.rows_linking(file_id)
+    if not linked:
+        return None
     rows = live.execute(
         "SELECT p.id AS id, s.university AS university, p.title AS title FROM pyq_papers p "
-        "JOIN subjects s ON s.id = p.subject_id "
-        "WHERE instr(p.drive_link, :p) > 0 OR instr(p.preview_link, :p) > 0 LIMIT 1",
-        {"p": f"/d/{file_id}/"})
+        "JOIN subjects s ON s.id = p.subject_id WHERE p.id = :i", {"i": linked[0]["id"]})
     return rows[0] if rows else None
 
 
 # --- 1. push ----------------------------------------------------------------
 
-def push_reviews(state_db: Db, live: Db, drive, stats: SyncStats, limit: int = 500) -> None:
+def push_reviews(state_db: Db, live: Db, drive, stats: SyncStats, limit: int = 500,
+                 index: "publish.LinkIndex | None" = None) -> None:
+    index = index or publish.LinkIndex(live)
     papers = state_db.execute(
         """SELECT * FROM papers WHERE stage = 'staged' AND status = 'review'
            AND (review_pushed_at IS NULL OR review_pushed_at < updated_at)
            ORDER BY updated_at LIMIT :n""", {"n": limit})
     for paper in papers:
         pid = paper["drive_id"]
-        site = _site_row(live, pid)
+        site = _site_row(live, pid, index)
         if site is None:
             # Not on the live site: nothing could be published, so nothing
             # to decide yet. Marked so it is not looked up every run.

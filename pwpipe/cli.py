@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import state
 from .blocklist import SEED_PATH, Blocklist
-from .db import connect
+from .db import METER, connect
 from .discover import aggregate, apply_approved, fingerprint, write_candidates
 from .process import process_paper
 
@@ -313,7 +313,11 @@ def main(argv: list[str] | None = None) -> int:
     nx.set_defaults(func=_next)
 
     args = ap.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    finally:
+        if METER.statements:       # a one-line receipt of what this run cost Turso
+            print(METER.summary(), file=sys.stderr)
 
 
 if __name__ == "__main__":

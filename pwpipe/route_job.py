@@ -16,6 +16,7 @@ from pathlib import Path
 from . import state
 from .db import Db
 from .keys import QuotaExhausted
+from .publish import LinkIndex
 from .route import AI, plan_paper, header_text
 
 MAX_ATTEMPTS = 3
@@ -63,16 +64,21 @@ def _record(db: Db, drive_id: str, status: str, result: dict) -> None:
          "a": 1 if status == "error" else 0, "t": state.now()})
 
 
-def _site(live: Db, paper: dict) -> tuple[dict, dict] | None:
+def _site(live: Db, paper: dict, index: LinkIndex) -> tuple[dict, dict] | None:
+    """The site row (and its subject) for a paper. Found through the link
+    index, not ``instr()`` per paper, which read up to 41,024 rows each time."""
     ids = [i for i in (paper["drive_id"], paper.get("output_file_id")) if i]
     for fid in ids:
+        linked = index.rows_linking(fid)
+        if not linked:
+            continue
         rows = live.execute(
             """SELECT p.id AS pid, p.year AS year, p.exam_type AS exam_type, p.title AS title,
                       s.id AS id, s.university AS university, s.program AS program,
                       s.branch AS branch, s.semester AS semester, s.code AS code,
                       s.name AS name, s.aliases AS aliases
                FROM pyq_papers p JOIN subjects s ON s.id = p.subject_id
-               WHERE instr(p.drive_link, :f) > 0 LIMIT 1""", {"f": f"/d/{fid}/"})
+               WHERE p.id = :i""", {"i": linked[0]["id"]})
         if rows:
             r = rows[0]
             return ({"id": r["pid"], "year": r["year"], "exam_type": r["exam_type"], "title": r["title"]},
@@ -131,6 +137,7 @@ def run(state_db: Db, live: Db, drive, ai: AI | None, limit: int, max_minutes: f
     stats = RouteStats()
     deadline = time.monotonic() + max_minutes * 60
     cands = Candidates(live)
+    index = LinkIndex(live)
     workdir = Path(tempfile.mkdtemp(prefix="pwroute-"))
     ai_out = False
     from .sync import tables_ready
@@ -143,7 +150,7 @@ def run(state_db: Db, live: Db, drive, ai: AI | None, limit: int, max_minutes: f
         pid = paper["drive_id"]
         stats.checked += 1
         try:
-            site = _site(live, paper)
+            site = _site(live, paper, index)
             if site is None:
                 stats.not_on_site += 1
                 _record(state_db, pid, "done", {"note": "not on the live site"})

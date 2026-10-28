@@ -61,3 +61,32 @@ def test_chain_counts_stop_at_the_cap(big, monkeypatch):
     left, moved = chain.left_and_moved(big, "work", 0, "x")
     assert left == 10 and moved == 0
     assert chain.again(big, "work", 0, "x")[0] is False
+
+
+def test_sync_and_route_find_site_rows_without_scanning_per_paper(tmp_path):
+    from pwpipe import publish, route_job, sync
+
+    class Counting(SqliteDb):
+        scans = 0
+
+        def execute(self, sql, params=None):
+            if "FROM pyq_papers" in sql and "WHERE p.id" not in sql and "WHERE id" not in sql:
+                Counting.scans += 1
+            return super().execute(sql, params)
+
+    live = Counting(str(tmp_path / "live.db"))
+    live.execute("CREATE TABLE subjects (id INTEGER PRIMARY KEY, university TEXT, program TEXT, "
+                 "branch TEXT, semester INT, code TEXT, name TEXT, aliases TEXT)")
+    live.execute("CREATE TABLE pyq_papers (id INTEGER PRIMARY KEY, subject_id INT, title TEXT, "
+                 "year TEXT, exam_type TEXT, drive_link TEXT, preview_link TEXT)")
+    live.execute("INSERT INTO subjects (id, university, program, name) VALUES (1, 'RGPV', 'B.Tech', 'X')")
+    for i in range(30):
+        live.execute("INSERT INTO pyq_papers (subject_id, title, drive_link, preview_link) "
+                     "VALUES (1, 't', :v, :p)",
+                     {"v": publish.view_link(f"f{i}"), "p": publish.preview_link(f"f{i}")})
+    index = publish.LinkIndex(live)
+    for i in range(30):
+        assert sync._site_row(live, f"f{i}", index)["university"] == "RGPV"
+        assert route_job._site(live, {"drive_id": f"f{i}"}, index)[1]["name"] == "X"
+    assert sync._site_row(live, "nope", index) is None
+    assert Counting.scans == 1                      # the index, once - not 61 instr() scans

@@ -176,6 +176,45 @@ Five MP Board papers sent back with notes; all five now pass on their own, and
   erased boxes is a note, not a failure: tables make Tesseract re-read the layout
   (retention 0.55 on a page whose only change was three erased URLs).
 
+### From the owner's second round of review decisions (2026-10-28, v0.4.0)
+
+- **Owner's rule: an identified ad is erased even if it clips the question beside
+  it.** Before, a box that touched other words was refused and the paper went to
+  review ("conflict"). Now the ad's *exact* box (never padded) is erased and the
+  paper is not held for it; `Region.forced` / `clipped` record how many words were
+  touched, and the verifier does not count those words as lost.
+- **A site name OCR split in two** ("...assam" + "board.com") is erased whole, and
+  **one garbled word between two URL words** ("http" + "\EEE." + "onlinebu.com") is
+  taken as the URL's middle.
+- **An ink smear boxed as a "word"** (464 px beside an MP Board URL) is not content:
+  boxes taller than four lines are ignored when checking what a URL touches.
+- **Grey scans** (Barkatullah): global Otsu turned the grey area black and read 2
+  words of a 250-word page. A page that reads almost nothing is read again with
+  Sauvola thresholding and the better reading wins; the cleaned page is verified
+  with the same threshold.
+- **Our own "paperwala.org" mark** misread by OCR as an unknown site was 6% of the
+  review queue; words inside the mark's boxes are ignored when verifying.
+
+### Database read budget (2026-10-29)
+
+On 2026-10-28 the pipeline read 700M Turso rows in a day (free limit 500M a month)
+and Turso blocked every database in the org, the live site's included. Rules since:
+
+- **No query may scan a table per paper.** `claim` walks an index and stops at its
+  LIMIT (`ix_papers_claim`); "any left?" checks stop at 1000 rows (`chain.CAP`);
+  looking up which site row links a Drive file uses `publish.LinkIndex` (one read
+  of `pyq_papers` per run) because `instr()` cannot use an index. Publish, sync and
+  route all use it. `tests/test_read_budget.py` fails if any of this regresses.
+- **Every run counts its reads and has a fuse.** Turso returns `rows_read` for each
+  statement; `db.METER` adds them up, prints one line at exit
+  (`database use this run: ...`) and raises `ReadBudgetExceeded` (a `DbError`, so a
+  worker hands its paper back and stops) at `PIPELINE_READ_BUDGET` rows per process
+  (default 500,000; `0` = off). Normal use is thousands of rows.
+- **Keep the pipeline's state database in a different Turso account from the
+  site's.** The free quota is per org; one over its limit blocks all of its databases.
+- Still one pass over the table per run (not per paper): route's `_todo`, the daily
+  `summary`/health counts. Measure with `turso plan show` after any change.
+
 ### Lessons from going live (2026-10-28)
 
 - Groq is behind Cloudflare, which answers urllib's default User-Agent with `403 error code: 1010`; send a UA, or a 403 retires every key.
