@@ -63,7 +63,7 @@ jobs:
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
           LIVE_DB_URL: ${{ secrets.LIVE_DB_URL }}
           LIVE_DB_TOKEN: ${{ secrets.LIVE_DB_TOKEN }}
-          SITE_URL: https://paperwala-b9nn.onrender.com
+          SITE_URL: https://paperwala.org
         run: python -m pwpipe publish --limit ${{ inputs.limit || '2000' }} --max-minutes 100
 
   next:

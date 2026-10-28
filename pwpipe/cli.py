@@ -155,7 +155,7 @@ def _publish(args) -> int:
     from .drive import DriveClient
     from .publish import PublishStop, run
 
-    site = os.environ.get("SITE_URL", "https://paperwala-b9nn.onrender.com")
+    site = os.environ.get("SITE_URL", "https://paperwala.org")
     try:
         stats = run(connect(args.db), connect_live(), DriveClient.from_env(), site,
                     args.limit, args.max_minutes, owner=args.owner or "publish",

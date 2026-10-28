@@ -4,7 +4,7 @@ title: paperwala-pipeline
 
 # paperwala-pipeline
 
-paperwala-pipeline is the tool behind [Paperwala](https://paperwala.onrender.com), a
+paperwala-pipeline is the tool behind [Paperwala](https://paperwala.org), a
 free library of previous-year exam papers for Indian universities and school boards.
 
 It downloads exam-paper PDFs, removes advertisements, watermarks and contact
