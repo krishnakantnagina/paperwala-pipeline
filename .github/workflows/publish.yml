@@ -33,7 +33,8 @@ jobs:
       group: publish
       cancel-in-progress: false
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # Sync (up to 500 review items, ~25 min) + publish (100 min) must fit.
+    timeout-minutes: 150
     outputs:
       since: ${{ steps.t.outputs.since }}
     steps:

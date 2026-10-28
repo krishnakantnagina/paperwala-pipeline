@@ -165,14 +165,15 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
             boxes = [b for r in plan.applied_regions for b in r.boxes]
             lossless = plan.mode == "rebuild" and "DCT" not in next(
                 i.filter for i in src_page.images if i.xref == src_page.scan_xref)
-            ignore = [plan.stamp_box] if plan.stamp_box and render else []
+            ignore = plan.stamp_boxes if render else []
             problem = _pixel_check(before.image, after_img, boxes, lossless, ignore)
             if problem:
                 result.fail(f"page {plan.number}: {problem}")
             stat["pixels"] = problem or "ok"
 
-            if plan.stamp_box:
-                has_mark = STAMP_TEXT in dst_doc[dst_page.number].get_text()
+            if plan.stamp_boxes:
+                marks = dst_doc[dst_page.number].get_text().count(STAMP_TEXT)
+                has_mark = marks >= len(plan.stamp_boxes)
                 stat["stamp"] = "ok" if has_mark else "missing"
                 if not has_mark:
                     result.fail(f"page {plan.number}: paperwala.org mark missing")

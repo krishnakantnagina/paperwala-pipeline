@@ -16,7 +16,7 @@ from .crops import page_thumb, region_crop
 from .detect import classify_lines, plan_page
 from .ocr import DEFAULT_LANGS, group_lines, ocr_image
 from .pdf import analyze, file_sha256, open_pdf, raster_page
-from .stamp import find_stamp_box
+from .stamp import find_stamp_boxes
 from .verify import verify
 
 
@@ -34,7 +34,7 @@ def process_paper(src: str | Path, dst: str | Path, bl: Blocklist, paper_id: str
             plan = plan_page(page, raster.image.size, lines, bl)
             plan.origin, plan.scale = raster.origin, raster.scale
             if stamp and not plan.drop and "rotated_page" not in plan.review:
-                plan.stamp_box = find_stamp_box(
+                plan.stamp_boxes = find_stamp_boxes(
                     raster.image, [b for l in lines for _, _, b in l.words])
             plans.append(plan)
             # Keep pixels only where a crop will be drawn; a 30-page scan held
@@ -86,7 +86,8 @@ def process_paper(src: str | Path, dst: str | Path, bl: Blocklist, paper_id: str
         "page_count": info.page_count,
         "pages_dropped": sum(p.drop for p in plans),
         "scan_pages": sum(p.is_scan for p in info.pages),
-        "stamped_pages": sum(1 for p in plans if p.stamp_box and not p.drop),
+        "stamped_pages": sum(1 for p in plans if p.stamp_boxes and not p.drop),
+        "stamps": sum(len(p.stamp_boxes) for p in plans if not p.drop),
         "image_sha1": sorted({i.sha1 for p in info.pages for i in p.images}),
         "changed": any(p.applied_regions or p.drop for p in plans),
         "review": review,
