@@ -24,6 +24,9 @@ class Blocklist:
     # Domains that are never ads: official board and university sites printed
     # on real papers. Matched as suffixes.
     allow_domain_suffixes: list[str] = field(default_factory=list)
+    # Sites that appear *inside questions* ("What is www.google.com?") and
+    # must survive. Every other written-out domain is erased as promotion.
+    allow_domains: list[str] = field(default_factory=list)
     # Phrases that mark a line as promotional. Alone they only make a line
     # suspect; next to a confirmed ad line they join the ad block.
     keywords: list[str] = field(default_factory=list)

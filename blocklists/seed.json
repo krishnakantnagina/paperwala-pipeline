@@ -12,7 +12,9 @@
     "onlinebu.com",
     "davvonline.com",
     "aktuonline.com",
-    "rgpvonline.com"
+    "rgpvonline.com",
+    "a2zsubjects.com",
+    "a2zsubjcts.com"
   ],
   "allow_domain_suffixes": [
     ".nic.in",
@@ -22,6 +24,24 @@
     ".res.in",
     ".edu",
     ".gov"
+  ],
+  "allow_domains": [
+    "google.com",
+    "google.co.in",
+    "gmail.com",
+    "yahoo.com",
+    "wikipedia.org",
+    "microsoft.com",
+    "amazon.in",
+    "amazon.com",
+    "flipkart.com",
+    "irctc.co.in",
+    "india.gov.in",
+    "w3.org",
+    "example.com",
+    "facebook.com",
+    "twitter.com",
+    "linkedin.com"
   ],
   "keywords": [
     "whatsapp",

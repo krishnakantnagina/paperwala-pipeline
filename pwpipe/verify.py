@@ -23,7 +23,7 @@ from PIL import Image
 
 from .blocklist import Blocklist
 from .detect import (REAL_WORD_CONF, PagePlan, _alnum, _tld_word, _url_word,
-                     classify_lines)
+                     classify_lines, line_labels)
 from .ocr import DEFAULT_LANGS, group_lines, ocr_image
 from .pdf import PdfInfo, analyze, open_pdf, raster_page
 from .rules import AD, SUSPECT, WEAK, _domain_label, line_key
@@ -105,7 +105,7 @@ def erased_content(plan: PagePlan, labels: list[str]) -> list[str]:
             if line.kind not in (AD, SUSPECT, WEAK):
                 bad.append(text)
             elif line.reason.startswith("domain:") and not (
-                    _url_word(text, labels) or _tld_word(text)):
+                    _url_word(text, line_labels(line, labels)) or _tld_word(text)):
                 bad.append(text)
     return bad
 

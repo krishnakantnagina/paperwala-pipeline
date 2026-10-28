@@ -91,9 +91,23 @@ def test_page_of_only_ads_is_dropped_with_review(bl):
     assert plan.drop and "drop_page" in plan.review
 
 
-def test_bare_phone_goes_to_review(bl):
-    plan = plan_page(PAGE, SIZE, questions(bl) + [line("9300930012", 1600, bl=bl)], bl)
+def test_bare_phone_is_erased(bl):
+    plan = plan_page(PAGE, SIZE, questions(bl) + [line("Mob. 9300930012", 1600, bl=bl)], bl)
+    assert len(plan.applied_regions) == 1 and plan.review == []
+
+
+def test_phone_inside_a_question_goes_to_review(bl):
+    q = line("Q9. Write the number 9876543210 in words", 1600, bl=bl)
+    plan = plan_page(PAGE, SIZE, questions(bl) + [q], bl)
     assert plan.regions == [] and "suspect" in plan.review
+
+
+def test_other_promo_site_beside_question_loses_only_its_url(bl):
+    q = line("सही विकल्प चुनिये - a2zSUBJCTS.COM", 1600, bl=bl)
+    plan = plan_page(PAGE, SIZE, questions(bl) + [q], bl)
+    assert [r.lines for r in plan.applied_regions] == [["a2zSUBJCTS.COM"]]
+    kept = [t for t, _, b in q.words if not plan.erased(b)]
+    assert kept == ["सही", "विकल्प", "चुनिये", "-"]
 
 
 def test_blank_page_goes_to_review(bl):

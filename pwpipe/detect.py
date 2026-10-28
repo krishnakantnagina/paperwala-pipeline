@@ -165,6 +165,14 @@ def _tld_word(text: str) -> bool:
     return re.sub(r"[^a-z]", "", text.lower()) in ("com", "corn", "in", "net", "co")
 
 
+def line_labels(line, labels: list[str]) -> list[str]:
+    """Domain labels to recognise URL words by: the blocklist's, plus the
+    domain this line was flagged for (it may be one nobody listed)."""
+    if line.reason.startswith("domain:"):
+        return labels + [_domain_label(line.reason.split(":", 1)[1])]
+    return labels
+
+
 def _erase_part(line: OcrLine, labels: list[str]):
     """What erasing an ad line removes, and which of its words must survive.
 
@@ -177,6 +185,7 @@ def _erase_part(line: OcrLine, labels: list[str]):
     if not line.reason.startswith("domain:"):
         return line.bbox, line.text, []
     words = line.words
+    labels = line_labels(line, labels)
     picked = {i for i, (t, _, _) in enumerate(words) if _url_word(t, labels)}
     # ".com" OCR'd as its own word right after the URL.
     picked |= {i + 1 for i in picked if i + 1 < len(words) and _tld_word(words[i + 1][0])}

@@ -1,10 +1,12 @@
 """Classify one OCR line: ad, suspect, weak, or nothing.
 
-- ``ad``: certain enough to erase without a human (an approved domain or line,
-  or a phone number next to a contact keyword).
-- ``suspect``: promotional-looking but unproven (an unknown domain, a bare
-  phone number, a keyword). Joins an ad block it touches; on its own it only
-  sends the paper to review.
+- ``ad``: erased without a human: a blocklisted domain; any other written-out
+  domain that is not official or allowlisted (only its URL words go); a phone
+  number next to a contact keyword; a phone number standing alone or with only
+  a label ("Mob. 9300930012"); an approved line.
+- ``suspect``: promotional-looking but unproven (a phone number inside a
+  sentence - "Write 9876543210 in words" is a maths question - or a keyword).
+  Joins an ad block it touches; on its own it only sends the paper to review.
 - ``weak``: vocabulary that is promotional only inside an ad block.
 
 Paper codes, roll numbers, marks and years never match: phones must be ten
@@ -80,6 +82,24 @@ def _domain_label(domain: str) -> str:
     return domain.removeprefix("www.").split(".")[0]
 
 
+def domain_allowed(domain: str, bl: Blocklist) -> bool:
+    if any(domain == s.lstrip(".") or domain.endswith(s) for s in bl.allow_domain_suffixes):
+        return True
+    return any(domain == a or domain.endswith("." + a) for a in bl.allow_domains)
+
+
+# Labels printed next to a contact number; a line that is only these plus a
+# number is a contact line, not a question.
+_PHONE_LABELS = re.compile(
+    r"\b(?:mob(?:ile)?|ph(?:one)?|tel|cell|call|contact|no|number|whats\s*app|helpline)\b"
+    r"|[+:.\-/()@]")
+
+
+def _bare_phone(text: str) -> bool:
+    rest = re.sub(r"[\d\s]", "", _PHONE_LABELS.sub(" ", fix_digits(text).lower()))
+    return sum(c.isalnum() for c in rest) <= 2
+
+
 def classify_line(text: str, bl: Blocklist) -> tuple[str | None, str]:
     lowered = text.lower()
     compact = re.sub(r"[^a-z0-9]", "", lowered)
@@ -104,11 +124,13 @@ def classify_line(text: str, bl: Blocklist) -> tuple[str | None, str]:
     if phones and keyword:
         return AD, f"phone+keyword:{keyword}"
 
-    unknown = [d for d in find_domains(text, explicit_only=True)
-               if not any(d == s.lstrip(".") or d.endswith(s) for s in bl.allow_domain_suffixes)]
+    unknown = [d for d in find_domains(text, explicit_only=True) if not domain_allowed(d, bl)]
     if unknown:
-        return SUSPECT, f"domain?:{unknown[0]}"
+        # Promotion for some other website: erased (URL words only).
+        return AD, f"domain:{unknown[0]}"
     if phones:
+        if _bare_phone(text):
+            return AD, "phone:bare"
         return SUSPECT, "phone"
     if keyword:
         return SUSPECT, f"keyword:{keyword}"

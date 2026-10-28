@@ -53,14 +53,22 @@ def test_official_site_is_never_flagged(bl):
     assert classify_line("www.rgpv.ac.in", bl)[0] not in (AD, SUSPECT)
 
 
-def test_phone_with_keyword_is_ad_alone_is_suspect(bl):
+def test_phone_with_keyword_or_alone_is_ad_in_a_sentence_is_suspect(bl):
     assert classify_line("Whatsapp @ 93009300I2", bl)[0] == AD
-    assert classify_line("9300930012", bl)[0] == SUSPECT
+    assert classify_line("9300930012", bl)[0] == AD
+    assert classify_line("Mob. 93009 30012", bl)[0] == AD
+    # A maths question must never be erased automatically.
+    assert classify_line("Write 9876543210 in words", bl)[0] == SUSPECT
 
 
-def test_unknown_domain_is_suspect(bl):
+def test_any_other_written_out_domain_is_ad(bl):
     kind, reason = classify_line("www.someothersite.com", bl)
-    assert kind == SUSPECT and "someothersite" in reason
+    assert kind == AD and reason == "domain:someothersite.com"
+
+
+def test_allowlisted_site_in_a_question_survives(bl):
+    assert classify_line("Q3. What is the use of www.google.com?", bl)[0] not in (AD, SUSPECT)
+    assert classify_line("Book tickets on irctc.co.in", bl)[0] not in (AD, SUSPECT)
 
 
 def test_weak_and_plain(bl):
@@ -101,5 +109,5 @@ def test_prose_with_dots_is_not_a_domain(bl, text):
 @pytest.mark.parametrize("text", [
     "a2zSUBJCTS.COM Biology", "Visit www. someothersite .com", "http://www.a2zSubjects.com",
 ])
-def test_written_out_unknown_domain_is_still_suspect(bl, text):
-    assert classify_line(text, bl)[0] == SUSPECT
+def test_written_out_unknown_domain_is_ad(bl, text):
+    assert classify_line(text, bl)[0] == AD
