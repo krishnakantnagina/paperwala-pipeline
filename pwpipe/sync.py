@@ -32,6 +32,7 @@ class SyncStats:
     approved: int = 0
     kept_original: int = 0
     recleaned: int = 0
+    moved: int = 0
     reports_restored: int = 0
     reports_recleaned: int = 0
     skipped: list[str] = field(default_factory=list)
@@ -107,12 +108,16 @@ def _mark_pushed(state_db: Db, drive_id: str) -> None:
 # --- 2. decisions on cleaned papers ------------------------------------------
 
 def pull_decisions(state_db: Db, live: Db, stats: SyncStats) -> None:
-    rows = live.execute("SELECT id, source_id, decision, decision_note, decided_by "
-                        "FROM pipeline_review WHERE decision != '' AND synced = 0")
+    rows = live.execute("SELECT id, source_id, kind, pyq_paper_id, detail, decision, "
+                        "decision_note, decided_by FROM pipeline_review "
+                        "WHERE decision != '' AND synced = 0")
     for row in rows:
         pid, who = row["source_id"], f"admin:{row['decided_by']}"
         note = row["decision_note"] or ""
-        if row["decision"] == "approve":
+        if row["kind"] == "route":
+            if row["decision"] == "approve":
+                stats.moved += _apply_move(live, row)
+        elif row["decision"] == "approve":
             if state.decide(state_db, pid, ("staged", "review"), ("approved", "ready"), who,
                             f"approved in review. {note}".strip()):
                 stats.approved += 1
@@ -126,6 +131,18 @@ def pull_decisions(state_db: Db, live: Db, stats: SyncStats) -> None:
         else:
             stats.skipped.append(f"review {row['id']}: unknown decision {row['decision']!r}")
         live.execute("UPDATE pipeline_review SET synced = 1 WHERE id = :i", {"i": row["id"]})
+
+
+def _apply_move(live: Db, row: dict) -> int:
+    """Move a paper to the subject a person approved, fenced on the subject
+    it was in when proposed (an admin may have moved it by hand since)."""
+    detail = json.loads(row["detail"] or "{}") if isinstance(row["detail"], str) else row["detail"] or {}
+    if not detail.get("to_subject_id") or not row["pyq_paper_id"]:
+        return 0
+    moved = live.execute(
+        "UPDATE pyq_papers SET subject_id = :to WHERE id = :p AND subject_id = :fr RETURNING id",
+        {"to": detail["to_subject_id"], "p": row["pyq_paper_id"], "fr": detail["from_subject_id"]})
+    return len(moved)
 
 
 # --- 3. student reports --------------------------------------------------------

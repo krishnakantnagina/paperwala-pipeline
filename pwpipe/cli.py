@@ -13,6 +13,7 @@
     python -m pwpipe publish [--limit N] [--max-minutes M]
     python -m pwpipe unpublish DRIVE_ID ... --reason TEXT
     python -m pwpipe sync            (site review queue <-> pipeline, both ways)
+    python -m pwpipe route [--limit N] [--max-minutes M]
 
 ``--db`` defaults to Turso via PIPELINE_DB_URL / PIPELINE_DB_TOKEN.
 """
@@ -187,6 +188,23 @@ def _sync(args) -> int:
     return 0
 
 
+def _route(args) -> int:
+    from dataclasses import asdict
+
+    from .db import connect_live
+    from .drive import DriveClient
+    from .route import AI
+    from .route_job import run
+
+    state_db = connect(args.db)
+    ai = AI.from_env(shared=state_db)
+    print(f"AI keys: groq {len(ai.groq)}, gemini {len(ai.gemini)}", flush=True)
+    stats = run(state_db, connect_live(), DriveClient.from_env(), ai, args.limit,
+                args.max_minutes, log=lambda m: print(m, flush=True))
+    print(json.dumps(asdict(stats), indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="pwpipe")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -271,6 +289,12 @@ def main(argv: list[str] | None = None) -> int:
     sy = sub.add_parser("sync", help="exchange review items and decisions with the site")
     sy.add_argument("--db")
     sy.set_defaults(func=_sync)
+
+    ro = sub.add_parser("route", help="check papers' headers against where they are filed")
+    ro.add_argument("--db")
+    ro.add_argument("--limit", type=int, default=1500)
+    ro.add_argument("--max-minutes", type=float, default=150)
+    ro.set_defaults(func=_route)
 
     args = ap.parse_args(argv)
     return args.func(args)
