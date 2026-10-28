@@ -55,8 +55,9 @@ def line_key(text: str) -> str:
 
 def find_phones(text: str) -> list[str]:
     fixed = fix_digits(text)
-    # Phones are printed as "93009 30012" or "9300-930012".
-    collapsed = re.sub(r"(?<=\d)[\s\-]+(?=\d)", "", fixed)
+    # Phones are printed as "93009 30012" or "9300-930012". Only groups of
+    # 3+ digits are joined: a table row "70 60 38 32 48" is not a phone.
+    collapsed = re.sub(r"(?<=\d{3})[\s\-]+(?=\d{3})", "", fixed)
     return _PHONE_RE.findall(collapsed)
 
 

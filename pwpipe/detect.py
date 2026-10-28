@@ -123,6 +123,31 @@ def _intersects(a, b) -> bool:
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
+# A URL stamped between two lines of a Hindi paper: matras of the line above
+# and below reach 2-6 px into its box (2 MP Board papers the owner sent back,
+# 2026-10-28). Those are other lines' words, not the URL's neighbours, so
+# the box is trimmed off them - if most of the URL's height is still erased.
+MIN_TRIMMED_HEIGHT = 0.6
+
+
+def _trim_off_lines(box, hits):
+    """``box`` shrunk vertically clear of ``hits`` that belong to the line
+    above or below it, or None if a hit is on its own line (beside it) or
+    too little of the box would be left."""
+    x0, y0, x1, y1 = box
+    mid = (y0 + y1) / 2
+    for b in hits:
+        if b[1] < y0 and b[3] < mid:          # line above, overlapping its top
+            y0 = max(y0, b[3] + 1)
+        elif b[3] > y1 and b[1] > mid:        # line below, overlapping its bottom
+            y1 = min(y1, b[1] - 1)
+        else:
+            return None
+    if y1 - y0 < MIN_TRIMMED_HEIGHT * (box[3] - box[1]):
+        return None
+    return (x0, y0, x1, y1)
+
+
 def _union(boxes):
     return (min(b[0] for b in boxes), min(b[1] for b in boxes),
             max(b[2] for b in boxes), max(b[3] for b in boxes))
@@ -211,6 +236,50 @@ def _erase_part(line: OcrLine, labels: list[str]):
     return (_union([words[i][2] for i in order]), " ".join(words[i][0] for i in order), kept)
 
 
+def merge_found_ads(lines: list[OcrLine], found: list[OcrLine], bl: Blocklist) -> int:
+    """Add URL ad lines that another reading found - the verifier's reading of
+    the cleaned page, or a reading with the page's rules removed - to a page's
+    lines, in place. The first reading's version of the same ink (garbled, or
+    run together with a neighbouring word) is dropped, so the new line is not
+    blocked by its own shadow. Returns how many lines were added."""
+    labels = [_domain_label(d) for d in bl.domains]
+    added = 0
+    for ad in found:
+        if ad.kind != AD or not ad.reason.startswith("domain:"):
+            continue
+        part = _erase_part(ad, labels)
+        if part is None:
+            continue
+        url = part[0]
+        if any(l.kind == AD and _intersects(l.bbox, url) for l in lines):
+            continue          # already known (and kept for its own reason)
+        rest = []
+        for l in lines:
+            keep = [w for w in l.words if _covered(w[2], url) < 0.5]
+            if len(keep) == len(l.words):
+                rest.append(l)
+            elif keep:
+                rest.append(_relined(keep, bl))
+        lines[:] = rest + [ad]
+        added += 1
+    return added
+
+
+def _covered(box, by) -> float:
+    """Fraction of ``box``'s area inside ``by``."""
+    ix = min(box[2], by[2]) - max(box[0], by[0])
+    iy = min(box[3], by[3]) - max(box[1], by[1])
+    area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
+    return max(0, ix) * max(0, iy) / area
+
+
+def _relined(words, bl: Blocklist) -> OcrLine:
+    text = " ".join(t for t, _, _ in words)
+    kind, reason = classify_line(text, bl)
+    return OcrLine(text, _union([b for _, _, b in words]),
+                   sum(c for _, c, _ in words) / len(words), kind, reason, list(words))
+
+
 # The "send your old paper & get 10-40 rupees" block's own words. When OCR
 # garbles its URL line, the block has no confirmed ad line left to anchor it
 # (4 RGPV papers in Gate 1), but this pair of phrases never occurs in a
@@ -283,7 +352,8 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
         others = [b for l in outsiders for b in l.real_words] + kept_here
         final = []
         for raw in region.boxes:
-            # Padded if that is still clear of real text, else exact.
+            # Padded if that is still clear of real text, else exact, else
+            # trimmed off the neighbouring lines' slivers.
             for p in (pad, 0):
                 box = (max(0, raw[0] - p), max(0, raw[1] - p),
                        min(width, raw[2] + p), min(height, raw[3] + p))
@@ -292,7 +362,11 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
                     final.append(box)
                     break
             else:
-                region.conflicts.append(f"touches {len(hits)} word(s) of real text")
+                box = _trim_off_lines(raw, hits)
+                if box and not any(_intersects(b, box) for b in others):
+                    final.append(box)
+                else:
+                    region.conflicts.append(f"touches {len(hits)} word(s) of real text")
         if not region.conflicts:
             region.boxes = final
             region.bbox = _union(final)

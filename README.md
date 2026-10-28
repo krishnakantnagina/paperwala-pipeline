@@ -153,6 +153,29 @@ to review (its URL touches question text).
 - **More AI keys:** add `GEMINI_API_KEY_2`…`_5` / `GROQ_API_KEY_2`…`_5` as repo secrets (`gh secret set -f keys.txt`). `keys.py` rotates them, rests a key on 429/5xx, retires it on 401/403, and shares daily counts across workers. Out of quota never fails a paper: it waits.
 - **Live database access** (`LIVE_DB_URL`, `LIVE_DB_TOKEN`) is used only by publish, sync and route.
 
+### From the owner's first review decisions (2026-10-28, v0.3.0)
+
+Five MP Board papers sent back with notes; all five now pass on their own, and
+10 papers that already passed (every source) come out exactly as before.
+
+- **URL stamped between two Hindi lines** ("में लिखना भूल गए। https://www.mpboardonline.com"):
+  the matras of the line above and below reach 2-6 px into the URL's box, and the
+  safety rule refused the whole erase. The box is now trimmed off the other lines'
+  slivers when at least 60% of the URL's height is still erased. A word *beside*
+  the URL on its own line still blocks it.
+- **A copy of the URL the first reading missed** (run into a neighbouring word,
+  "किन अन्तर बिग MPboardonline.com"): the verifier's reading of the cleaned page
+  finds it, so it is added and the paper cleaned again, up to two extra rounds
+  (`second_looks` in the report).
+- **A footer URL with a printed rule through it** reads as nothing. `ruled.py`
+  whitens long horizontal rules in a copy and re-reads a strip around each one
+  (sparse-text mode; page mode read garbage).
+- **Table rows are not phone numbers**: "70 60 38 32 48" was joined into
+  7060383248. Only digit groups of 3+ are joined now.
+- **Low word retention on a rendered page that is pixel-identical** outside the
+  erased boxes is a note, not a failure: tables make Tesseract re-read the layout
+  (retention 0.55 on a page whose only change was three erased URLs).
+
 ### Lessons from going live (2026-10-28)
 
 - Groq is behind Cloudflare, which answers urllib's default User-Agent with `403 error code: 1010`; send a UA, or a 403 retires every key.

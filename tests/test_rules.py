@@ -17,6 +17,7 @@ def test_fix_digits_only_touches_numberish_tokens():
 
 @pytest.mark.parametrize("text", [
     "Whatsapp @ 93009300I2", "Call 93009 30012", "+91 9300-930012", "mob. 9300930O12",
+    "Call 930 093 0012", "+91 98765 43210",
 ])
 def test_phone_found_through_ocr_noise(text):
     assert find_phones(text)
@@ -25,6 +26,7 @@ def test_phone_found_through_ocr_noise(text):
 @pytest.mark.parametrize("text", [
     "Paper code MCSE-101", "Roll No. 0123456789", "Max Marks 70 Time 3 hours",
     "Session 2026-2027", "12345 67890",  # starts with 1: not an Indian mobile
+    "जनसंख्या (लाखों में) 70 60 38 32 48",   # a table row, not 7060383248
 ])
 def test_no_phone_in_paper_numbers(text):
     assert not find_phones(text)

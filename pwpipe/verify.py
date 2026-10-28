@@ -46,6 +46,9 @@ class VerifyResult:
     pages: list[dict] = field(default_factory=list)
     # Output rasters by *source* page number, for before/after crops.
     rasters: dict[int, Image.Image] = field(default_factory=dict)
+    # Ad lines read on the cleaned page, by source page number, in the
+    # source raster's pixels: what the first reading missed.
+    leftover_ads: dict[int, list] = field(default_factory=dict)
 
     def fail(self, msg: str) -> None:
         self.ok = False
@@ -62,6 +65,25 @@ def _tokens(lines, plan: PagePlan | None = None) -> Counter:
             if conf >= REAL_WORD_CONF and sum(c.isalnum() for c in key) >= 2:
                 out[key] += 1
     return out
+
+
+def _identical_outside(before: Image.Image, after: Image.Image, boxes, ignore=()) -> bool:
+    """Not one pixel differs outside the erased boxes and the mark."""
+    if before.size != after.size:
+        return False
+    a = np.asarray(before.convert("L"))
+    b = np.asarray(after.convert("L"))
+    keep = np.ones(a.shape, dtype=bool)
+    for x0, y0, x1, y1 in list(boxes) + list(ignore):
+        keep[y0:y1, x0:x1] = False
+    return bool(np.array_equal(a[keep], b[keep]))
+
+
+def _proven(proven, before, after, boxes, ignore) -> bool:
+    # Computed only when needed: most pages never ask.
+    if proven is None:
+        return _identical_outside(before, after, boxes, ignore)
+    return proven
 
 
 def _pixel_check(before: Image.Image, after: Image.Image, boxes, lossless: bool,
@@ -180,10 +202,19 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
 
             lines = classify_lines(group_lines(ocr_image(after_img, langs)), bl)
 
-            ads = [l.text for l in lines if l.kind == AD]
+            ad_lines = [l for l in lines if l.kind == AD]
+            if ad_lines and after_img.size == tuple(plan.raster_size):
+                result.leftover_ads[plan.number] = ad_lines
+            ads = [l.text for l in ad_lines]
             if ads:
                 result.fail(f"page {plan.number}: ad still present: {ads[0][:60]!r}")
             stat["ads_left"] = len(ads)
+
+            # Proof the words are there: a lossless scan, or a rendered page
+            # with not one pixel different outside the boxes. Then low
+            # retention is Tesseract re-reading the layout (tables, 2026-10-28)
+            # and only a note.
+            proven = False if problem else (True if lossless else None)
 
             expected = _tokens(plan.lines, plan)
             got = _tokens(lines)
@@ -195,12 +226,12 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
                 stat["retention"] = round(retention, 4)
                 if retention < MIN_RETENTION:
                     msg = f"page {plan.number}: retention {retention:.3f} < {MIN_RETENTION}"
-                    # Lossless and pixel-identical outside the boxes: the words
-                    # are provably there; OCR just re-read the layout.
-                    (result.notes.append if lossless and not problem else result.fail)(msg)
+                    proven = _proven(proven, before.image, after_img, boxes, ignore)
+                    (result.notes.append if proven else result.fail)(msg)
             elif total - found > MAX_ABS_LOSS:
                 msg = f"page {plan.number}: lost {total - found} of {total} words"
-                (result.notes.append if lossless and not problem else result.fail)(msg)
+                proven = _proven(proven, before.image, after_img, boxes, ignore)
+                (result.notes.append if proven else result.fail)(msg)
             result.pages.append(stat)
             if keep_rasters_for and plan.number in keep_rasters_for:
                 result.rasters[plan.number] = after_img

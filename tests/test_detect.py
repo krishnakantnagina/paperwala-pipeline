@@ -176,3 +176,37 @@ def test_mcq_options_naming_apps_are_not_an_ad(bl):
     opts = [line("(a) Email (b) Fax", 1500, bl=bl), line("(c) Telegram (d) WhatsApp", 1555, bl=bl)]
     plan = plan_page(PAGE, SIZE, questions(bl) + opts, bl)
     assert plan.applied_regions == []
+
+
+def test_url_between_hindi_lines_is_trimmed_off_their_matras(bl):
+    # MP Board Accountancy, sent back by the owner: the stamped URL sits
+    # between two lines whose matras reach 3-6 px into its box.
+    above = line("Q8. Explain the cash book entries for the cheque", 760, x0=200, x1=900)
+    url = line("https://www.mpboardonline.com", 795, x0=400, x1=700, bl=bl)
+    below = line("Q9. Write the bank reconciliation statement here", 829, x0=200, x1=900)
+    plan = plan_page(PAGE, SIZE, questions(bl, n=8) + [above, url, below], bl)
+    (region,) = plan.applied_regions
+    (box,) = region.boxes
+    assert box[1] > 800 and box[3] < 829 and box[3] - box[1] >= 0.6 * 40
+
+
+def test_url_beside_a_word_on_its_own_line_is_not_trimmed(bl):
+    # A real neighbour on the same line is never cut around: still review.
+    q = line("Q7. Name it www.pyqonline.com", 880, x0=200, x1=600, bl=bl)
+    beside = line("photosynthesis", 885, x0=590, x1=800)
+    plan = plan_page(PAGE, SIZE, questions(bl) + [q, beside], bl)
+    assert plan.applied_regions == [] and "conflict" in plan.review
+
+
+def test_url_found_by_another_reading_replaces_its_garbled_shadow(bl):
+    from pwpipe.detect import merge_found_ads
+    shadow = line("वर्ग अन्तर MPboardon1ine.c0m", 920, x0=160, x1=1180)
+    lines = questions(bl) + [shadow]
+    found = line("MPboardonline.com", 920, x0=850, x1=1180, bl=bl)
+    assert merge_found_ads(lines, [found], bl) == 1
+    texts = [l.text for l in lines]
+    assert "MPboardonline.com" in texts and not any("MPboardon1ine" in t for t in texts)
+    assert "वर्ग अन्तर" in texts              # the question's words stay
+    plan = plan_page(PAGE, SIZE, lines, bl)
+    assert len(plan.applied_regions) == 1 and plan.review == []
+    assert merge_found_ads(lines, [found], bl) == 0   # known now: not added twice

@@ -5,4 +5,4 @@ The core (this package) works on local files only. Drive, Turso and GitHub
 Actions wrap around it later; nothing here needs a network or a credential.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
