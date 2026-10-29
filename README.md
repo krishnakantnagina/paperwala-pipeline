@@ -65,7 +65,7 @@ when `PIPELINE_TEST_DB_URL` is set (CI sets it).
 
 ```
 python -m pwpipe migrate
-python -m pwpipe seed ../mpboardonline.com-catalog/mpboardonline.com-catalog --catalog mpboardonline.com
+python -m pwpipe seed ../data/mpboardonline.com-catalog/mpboardonline.com-catalog --catalog mpboardonline.com
 python -m pwpipe status
 ```
 
