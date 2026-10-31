@@ -138,3 +138,29 @@ def test_cross_program_header_is_not_kept_silently():
 def test_noise_is_unverified_not_unsorted():
     s = subj(1, "B.Pharmacy", 2, "PY-204", "Pharmacognosy 1")
     assert P.decide(NOISE + "\n" + "readable words here to pass the length gate", s, cat(s)).kind == "unverified"
+
+
+def test_a_name_that_differs_only_by_its_number_is_a_different_subject():
+    text = "PY-505\nB.Pharmacy V Semester\nExamination, June 2020\nGrading System (GS)\nPharmacology - II\nTime : 3"
+    filed = subj(1, "B.Pharmacy", 5, "BP-503T", "Pharmacology 2")
+    other = subj(2, "B.Pharmacy", 5, "PY-505", "Pharmacology 1")
+    assert P.name_seen(text, "Pharmacology 2") >= 0.9 and P.name_seen(text, "Pharmacology 1") < 0.6
+    d = P.decide(text, filed, cat(filed, other))
+    assert d.kind != "move"
+
+
+def test_elective_letter_is_part_of_the_code():
+    f = P.parse_header("Total No. of Questions : 8]\nBP-803T(A)\nB.Pharmacy VIII Semester\nExamination, June 2025\nPharmacovigilance\nTime : 3")
+    assert f.code_key == "BP803TA"
+    g = P.parse_header("Total No. of Questions : 8]\nBP-803T-D\nB.Pharmacy VIII Semester\nExamination, June 2025\nScreening Methods\nTime : 3")
+    assert g.code_key == "BP803TD"
+    assert P.parse_header("BP-101T (CBGS)\nB.Pharmacy I Semester\nExamination, December 2023\nHuman Anatomy\nTime").code_key == "BP101T"
+
+
+def test_a_bare_elective_bucket_code_never_moves_a_paper():
+    bucket = subj(1, "B.Pharmacy", 8, "BP-803T", "G Pharmacovigilance")
+    opt_d = subj(2, "B.Pharmacy", 8, "BP-803T-D", "Pharmacological Screening Methods")
+    filed = subj(3, "B.Pharmacy", 8, "BP-804T", "Pharmaceutical Marketing Management")
+    text = "BP-803-T (CBGS)\nB.Pharmacy VIII Semester\nExamination, June 2020\nTime : Three Hours\nMaximum Marks : 75"
+    d = P.decide(text, filed, cat(bucket, opt_d, filed))
+    assert (d.kind, d.reason) == ("review", "elective_family")

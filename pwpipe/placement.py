@@ -49,7 +49,7 @@ SCHEME_WORDS = [
 ]
 
 _NOT_A_CODE_LINE = re.compile(r"marks|pages|questions|time\s*:|note\s*:|roll\s*no|enrol", re.I)
-_CODE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{2,6})[ -]?(\d{3,4})(?:[ -]?\(?([A-Z])\)?(?![a-z]))?(?:\s*[-(]\s*(CBCS|CBGS|GS|NGS)\s*\)?)?(?![A-Za-z0-9])")
+_CODE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{2,6})[ -]?(\d{3,4})(?:[ -]?\(?([A-Z])\)?(?![a-z]))?(?:\s*(?:\(\s*([A-E])\s*\)|-\s*([A-E])(?![A-Za-z0-9])))?(?:\s*[-(]\s*(CBCS|CBGS|GS|NGS)\s*\)?)?(?![A-Za-z0-9])")
 
 
 @dataclass
@@ -123,10 +123,10 @@ def parse_header(text: str) -> HeaderFacts:
         if _NOT_A_CODE_LINE.search(ln):
             continue
         for m in _CODE.finditer(ln):
-            prefix, digits, suffix, sch = m.groups()
+            prefix, digits, suffix, elective, elective2, sch = m.groups()
             if prefix in ("PH", "MM", "SEM") and not suffix and len(ln) > 30:   # "Max. Marks 70" style noise
                 continue
-            f.code = f"{prefix}-{digits}" + (f"-{suffix}" if suffix else "")
+            f.code = f"{prefix}-{digits}" + (f"-{suffix}" if suffix else "") + (f"-{elective or elective2}" if (elective or elective2) else "")
             f.code_key = code_key(f.code)
             if sch and not f.scheme:
                 f.scheme = {"GS": "GRADING", "NGS": "NONGRADING"}.get(sch, sch)
@@ -162,10 +162,14 @@ def name_seen(text: str, name: str) -> float:
         return 0.0
     words = norm(text).split()
     k = len(n.split())
+    numbers = re.findall(r"\d+", n)
     best = 0.0
     for size in {max(1, k - 1), k, k + 1}:
         for i in range(max(1, len(words) - size + 1)):
-            r = SequenceMatcher(None, n, " ".join(words[i:i + size])).ratio()
+            window = " ".join(words[i:i + size])
+            r = SequenceMatcher(None, n, window).ratio()
+            if re.findall(r"\d+", window) != numbers:
+                r = min(r, 0.55)        # "Pharmacology 2" is not "Pharmacology 1"
             if r > best:
                 best = r
                 if best >= 0.98:
@@ -217,6 +221,14 @@ class Catalog:
 
     def with_code(self, program: str, key: str) -> list[Subject]:
         return self.by_code.get((program, key), [])
+
+    def family(self, program: str, key: str) -> list[Subject]:
+        """Subjects whose code is `key` plus more letters: BP803T is the elective bucket of BP803TA..D."""
+        out = []
+        for (prog, k), subs in self.by_code.items():
+            if prog == program and len(k) > len(key) and k.startswith(key) and k[len(key):].isalpha():
+                out += subs
+        return out
 
 
 # ---------------------------------------------------------------- decision
@@ -283,6 +295,11 @@ def decide(text: str, filed: Subject, catalog: Catalog, ocr: bool = False) -> De
     # ---- 2. the header has a code that is not the filed subject's
     if f.code_key:
         cands = [t for t in catalog.with_code(program, f.code_key) if _semester_ok(f.semester, t) and not _scheme_conflict(f.scheme, t)]
+        elective_family = catalog.family(program, f.code_key)
+        if elective_family and not re.search(r"\d[A-Z]?$", f.code_key[-1:]) and cands:
+            names = ", ".join(sorted({t.name for t in elective_family})[:4])
+            return Decision("review", None, "elective_family",
+                            [f"{f.code} is an elective bucket; the header does not say which option ({names})"], f)
         if cands:
             scored = sorted(((name_seen(text, t.name), t) for t in cands), key=lambda x: -x[0])
             best_s, best = scored[0]
