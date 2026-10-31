@@ -195,3 +195,23 @@ def test_diploma_paper_is_kept_by_its_paper_code_and_moved_by_it_too():
     assert P.decide(DIPLOMA_OCR, right, cat(right, wrong), ocr=True).reason == "code_match"
     d = P.decide(DIPLOMA_OCR, wrong, cat(right, wrong), ocr=True)
     assert (d.kind, d.target_id) == ("move", 1)
+
+
+DPHARM = """F/2016/1946 Total Pages : 4
+FIRST YEAR (NEW) PHARMACY :
+BIOCHEMISTRY AND CLINICALPATHOLOGY )
+(104)
+Time : Three Hours Maximum Marks : 80"""
+
+
+def test_d_pharmacy_shares_the_diploma_layout_but_is_its_own_programme_and_groups_by_year():
+    f = P.parse_header(DPHARM)
+    assert (f.program, f.code_key, f.semester, f.year) == ("D.Pharmacy", "1946", 1, 2016)
+    s = subj(1, "D.Pharmacy", 1, "1946", "Biochemistry and Clinical Pathology")
+    assert P.decide(DPHARM, s, cat(s), ocr=True).reason == "code_match"
+
+
+def test_scheme_and_month_words_are_never_a_paper_code():
+    text = "Total Pages : 6 www.rgpvonline.com\nFIFTHSEMESTER\nSCHEME JULY 2009\nSome Readable Subject Name Here"
+    assert P.parse_header(text).code_key == ""
+    assert P.parse_header("Total Pages : 3\nSixth Semester\nScheme OCBC-2019\nElectrical Machines Readable").code_key == ""

@@ -51,6 +51,9 @@ SCHEME_WORDS = [
 
 _DIPLOMA_CODE = re.compile(r"((?:19|20)\d{2})\W{0,3}[1lI]?\W{0,3}(\d{4,5})\W{0,6}Total\W*Pages", re.I)
 
+_NOT_A_PREFIX = {"JULY", "JUNE", "JAN", "FEB", "MARCH", "APRIL", "MAY", "AUG", "SEPT", "OCT", "NOV", "DEC", "OCBC", "CGPA",
+                 "SCHEME", "YEAR", "PAGES", "TIME", "MARKS", "NOTE", "TOTAL", "MAX", "WWW", "HTTP", "ROLL", "SEM"}
+
 _NOT_A_CODE_LINE = re.compile(r"marks|pages|questions|time\s*:|note\s*:|roll\s*no|enrol", re.I)
 _CODE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{2,6})[ -]?(\d{3,4})(?:[ -]?\(?([A-Z])\)?(?![a-z]))?(?:\s*(?:\(\s*([A-E])\s*\)|-\s*([A-E])(?![A-Za-z0-9])))?(?:\s*[-(]\s*(CBCS|CBGS|GS|NGS)\s*\)?)?(?![A-Za-z0-9])")
 
@@ -101,7 +104,7 @@ def parse_header(text: str) -> HeaderFacts:
 
     diploma = _DIPLOMA_CODE.search("\n".join(lines[:5]))
     if diploma:
-        f.program = "Diploma"
+        f.program = "D.Pharmacy" if re.search(r"pharmac", head, re.I) else "Diploma"
         f.year = int(diploma.group(1))
         f.code = f.code_key = diploma.group(2)
     else:
@@ -122,6 +125,11 @@ def parse_header(text: str) -> HeaderFacts:
             if m:
                 f.semester = ROMAN[m.group(1)]
 
+    if f.program == "D.Pharmacy" and f.semester is None:
+        m = re.search(r"\b(first|second)\s*year", head, re.I)
+        if m:
+            f.semester = ORDINAL[m.group(1).lower()]
+
     for pat, scheme in SCHEME_WORDS:
         if re.search(pat, head, re.I if pat[0].islower() or pat.startswith("(?") else 0):
             f.scheme = scheme
@@ -133,7 +141,7 @@ def parse_header(text: str) -> HeaderFacts:
             continue
         for m in _CODE.finditer(ln):
             prefix, digits, suffix, elective, elective2, sch = m.groups()
-            if prefix in ("PH", "MM", "SEM") and not suffix and len(ln) > 30:   # "Max. Marks 70" style noise
+            if prefix in _NOT_A_PREFIX or (prefix in ("PH", "MM") and not suffix and len(ln) > 30):
                 continue
             f.code = f"{prefix}-{digits}" + (f"-{suffix}" if suffix else "") + (f"-{elective or elective2}" if (elective or elective2) else "")
             f.code_key = code_key(f.code)
