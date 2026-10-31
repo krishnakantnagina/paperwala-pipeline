@@ -42,11 +42,14 @@ PROGRAMS = [
 
 # scheme words printed in the header -> Subject.scheme
 SCHEME_WORDS = [
+    (r"OCBC\s*(?:20\d\d)?", "AICTE"), (r"CGPA", "GRADING"),
     (r"choice\s+based\s+grading", "CBGS"), (r"\bCBGS\b", "CBGS"),
     (r"choice\s+based\s+credit", "CBCS"), (r"\bCBCS\b", "CBCS"),
     (r"non[- ]?grading", "NONGRADING"), (r"\bNGS\b", "NONGRADING"),
     (r"grading\s+system", "GRADING"), (r"\(\s*GS\s*\)|-GS\b", "GRADING"),
 ]
+
+_DIPLOMA_CODE = re.compile(r"((?:19|20)\d{2})\W{0,3}[1lI]?\W{0,3}(\d{4,5})\W{0,6}Total\W*Pages", re.I)
 
 _NOT_A_CODE_LINE = re.compile(r"marks|pages|questions|time\s*:|note\s*:|roll\s*no|enrol", re.I)
 _CODE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{2,6})[ -]?(\d{3,4})(?:[ -]?\(?([A-Z])\)?(?![a-z]))?(?:\s*(?:\(\s*([A-E])\s*\)|-\s*([A-E])(?![A-Za-z0-9])))?(?:\s*[-(]\s*(CBCS|CBGS|GS|NGS)\s*\)?)?(?![A-Za-z0-9])")
@@ -96,16 +99,22 @@ def parse_header(text: str) -> HeaderFacts:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     head = "\n".join(lines[:16])
 
-    for pat, program in PROGRAMS:
-        if re.search(pat, head, re.I):
-            f.program = program
-            break
+    diploma = _DIPLOMA_CODE.search("\n".join(lines[:5]))
+    if diploma:
+        f.program = "Diploma"
+        f.year = int(diploma.group(1))
+        f.code = f.code_key = diploma.group(2)
+    else:
+        for pat, program in PROGRAMS:
+            if re.search(pat, head, re.I):
+                f.program = program
+                break
 
     m = re.search(r"\b(VIII|VII|VI|IV|V|III|II|IX|X|I)\b\s*[-.]?\s*(?:Semester|Sem\b)", head)
     if m:
         f.semester = ROMAN[m.group(1)]
     else:
-        m = re.search(r"\b(first|second|third|fourth|fifth|sixth|seventh|eighth)\s+sem", head, re.I)
+        m = re.search(r"\b(first|second|third|fourth|fifth|sixth|seventh|eighth)\s*sem", head, re.I)
         if m:
             f.semester = ORDINAL[m.group(1).lower()]
         else:
@@ -119,7 +128,7 @@ def parse_header(text: str) -> HeaderFacts:
             break
 
     # the code: first code-looking token on a line that is not marks/pages/roll
-    for ln in lines[:14]:
+    for ln in ([] if diploma else lines[:14]):
         if _NOT_A_CODE_LINE.search(ln):
             continue
         for m in _CODE.finditer(ln):
@@ -137,7 +146,8 @@ def parse_header(text: str) -> HeaderFacts:
     m = re.search(r"(?:Examination|Exam\.?)[\s,.\-]*(?:\(?[A-Za-z. ]*\)?[\s,.\-]*)?"
                   r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?[\s,.\-]*(\d{4})", head, re.I)
     if m:
-        f.month, f.year = MONTHS[m.group(1).lower()[:3]], int(m.group(2))
+        f.month = MONTHS[m.group(1).lower()[:3]]
+        f.year = f.year or int(m.group(2))
 
     # the subject: the first real line after the session / scheme lines
     start = 0
@@ -154,20 +164,25 @@ def parse_header(text: str) -> HeaderFacts:
     return f
 
 
-def name_seen(text: str, name: str) -> float:
+def name_seen(text: str, name: str, words: list[str] | None = None) -> float:
     """How well `name` appears anywhere in the header text (0..1). Two-column scans put the
-    questions beside the title, so the title cannot be cut out reliably; the name can be found."""
+    questions beside the title, so the title cannot be cut out reliably; the name can be found.
+    `words` is norm(text).split() when the caller already has it (it is the same for every candidate)."""
     n = norm(name)
     if len(n) < 4:
         return 0.0
-    words = norm(text).split()
+    if words is None:
+        words = norm(text).split()
     k = len(n.split())
     numbers = re.findall(r"\d+", n)
     best = 0.0
     for size in {max(1, k - 1), k, k + 1}:
         for i in range(max(1, len(words) - size + 1)):
             window = " ".join(words[i:i + size])
-            r = SequenceMatcher(None, n, window).ratio()
+            sm = SequenceMatcher(None, n, window)
+            if sm.real_quick_ratio() <= best or sm.quick_ratio() <= best:
+                continue
+            r = sm.ratio()
             if re.findall(r"\d+", window) != numbers:
                 r = min(r, 0.55)        # "Pharmacology 2" is not "Pharmacology 1"
             if r > best:
@@ -268,7 +283,9 @@ def decide(text: str, filed: Subject, catalog: Catalog, ocr: bool = False) -> De
         notes.append(f"header says {f.program}, filed under {filed.program}")
 
     sem_ok = _semester_ok(f.semester, filed)
-    filed_seen = name_seen(text, filed.name)
+    words = norm(text).split()
+    wset = set(words)
+    filed_seen = name_seen(text, filed.name, words)
     title_ok = clean_title(f.title)
 
     # ---- 1. the paper's code is the filed subject's code
@@ -278,13 +295,13 @@ def decide(text: str, filed: Subject, catalog: Catalog, ocr: bool = False) -> De
                             [f"code {f.code} matches but header says semester {f.semester}, subject is semester {filed.semester}"], f)
         if _scheme_conflict(f.scheme, filed):
             for t in catalog.with_code(program, f.code_key):
-                if t.id != filed.id and t.scheme == f.scheme and _semester_ok(f.semester, t) and name_seen(text, t.name) >= NAME_OK:
+                if t.id != filed.id and t.scheme == f.scheme and _semester_ok(f.semester, t) and name_seen(text, t.name, words) >= NAME_OK:
                     return Decision("move", t.id, "scheme_sibling", [f"header scheme {f.scheme}; sibling subject has it"], f)
             return Decision("review", None, "scheme_conflict", [f"header scheme {f.scheme}, subject scheme {filed.scheme}"], f)
         if filed_seen < NAME_OK:
             # RGPV reuses a code for different subjects: is a sibling's name the one printed?
             for t in catalog.with_code(program, f.code_key):
-                seen = name_seen(text, t.name)
+                seen = name_seen(text, t.name, words)
                 if t.id != filed.id and _semester_ok(f.semester, t) and seen >= NAME_STRONG and seen - filed_seen >= 0.25:
                     return Decision("move", t.id, "code_reused", [f"code {f.code} is shared; the header prints “{t.name}”"], f)
             if title_ok and similarity(f.title, filed.name) < 0.35:
@@ -301,7 +318,7 @@ def decide(text: str, filed: Subject, catalog: Catalog, ocr: bool = False) -> De
             return Decision("review", None, "elective_family",
                             [f"{f.code} is an elective bucket; the header does not say which option ({names})"], f)
         if cands:
-            scored = sorted(((name_seen(text, t.name), t) for t in cands), key=lambda x: -x[0])
+            scored = sorted(((name_seen(text, t.name, words), t) for t in cands), key=lambda x: -x[0])
             best_s, best = scored[0]
             second = scored[1][0] if len(scored) > 1 else 0.0
             if filed_seen >= NAME_STRONG and best_s < NAME_OK and not cross:
@@ -322,8 +339,10 @@ def decide(text: str, filed: Subject, catalog: Catalog, ocr: bool = False) -> De
     # ---- 3. no code in the header: the name is all there is
     if filed_seen >= NAME_STRONG and sem_ok and not cross:
         return Decision("keep", None, "name_match", notes, f)
-    pool = [t for t in catalog.by_id.values() if t.program == program and _semester_ok(f.semester, t)]
-    scored = sorted(((name_seen(text, t.name), t) for t in pool), key=lambda x: -x[0])[:2]
+    # only subjects sharing a real word with the header can match: skips ~99% of the catalogue
+    pool = [t for t in catalog.by_id.values() if t.program == program and _semester_ok(f.semester, t)
+            and any(len(w) >= 5 and w in wset for w in norm(t.name).split())]
+    scored = sorted(((name_seen(text, t.name, words), t) for t in pool), key=lambda x: -x[0])[:2]
     if scored and scored[0][0] >= 0.9 and scored[0][1].id != filed.id and filed_seen < NAME_OK             and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.1):
         return Decision("review", scored[0][1].id, "name_only", [f"only the name matches: “{scored[0][1].name}”"], f)
     return Decision("unverified", None, "no_evidence", notes or ["nothing in the header to compare"], f)

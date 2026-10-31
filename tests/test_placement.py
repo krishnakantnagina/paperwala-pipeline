@@ -164,3 +164,34 @@ def test_a_bare_elective_bucket_code_never_moves_a_paper():
     text = "BP-803-T (CBGS)\nB.Pharmacy VIII Semester\nExamination, June 2020\nTime : Three Hours\nMaximum Marks : 75"
     d = P.decide(text, filed, cat(bucket, opt_d, filed))
     assert (d.kind, d.reason) == ("review", "elective_family")
+
+
+DIPLOMA_OCR = """$/2013/5146 Total Pages : 6 @
+TR F1 B 2
+FIFTH SEMESTER (o) digra
+ARCHITECTURE & INTERIOR DESIGN (a) R
+SPECIFICATION WRITING (@) 3
+Time : Three Hours Maximum Marks : 100"""
+
+DIPLOMA_TEXT = """F1202416854
+Total Pages : 4
+Sixth Semester
+Electrical Engineering
+Scheme OCBC 2019
+INSTALLATION MAINTENANCE AND TESTING
+Time: Three Hours"""
+
+
+def test_diploma_header_gives_paper_code_semester_and_scheme():
+    f = P.parse_header(DIPLOMA_OCR)
+    assert (f.program, f.code_key, f.semester, f.year) == ("Diploma", "5146", 5, 2013)
+    g = P.parse_header(DIPLOMA_TEXT)
+    assert (g.program, g.code_key, g.semester, g.scheme) == ("Diploma", "6854", 6, "AICTE")
+
+
+def test_diploma_paper_is_kept_by_its_paper_code_and_moved_by_it_too():
+    right = subj(1, "Diploma", 0, "5146", "Specification Writing")
+    wrong = subj(2, "Diploma", 0, "6236", "General Mechanical Engineering")
+    assert P.decide(DIPLOMA_OCR, right, cat(right, wrong), ocr=True).reason == "code_match"
+    d = P.decide(DIPLOMA_OCR, wrong, cat(right, wrong), ocr=True)
+    assert (d.kind, d.target_id) == ("move", 1)
