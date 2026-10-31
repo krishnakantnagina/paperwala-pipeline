@@ -139,3 +139,32 @@ def test_flags_default_to_off(monkeypatch):
     assert (f.placement, f.auto_move, f.hide_unsorted) == (False, False, False)
     monkeypatch.setenv("ROUTE_PLACEMENT", "1")
     assert Flags.from_env().placement is True
+
+
+def test_approving_an_unsorted_proposal_takes_the_paper_off_the_site(tmp_path):
+    from pwpipe import sync
+    st, live = make(tmp_path)
+    live.execute("UPDATE pyq_papers SET subject_id = 10")
+    run(st, live, STRANGER)                       # proposal only: the paper stays
+    assert live.execute("SELECT COUNT(*) AS n FROM pyq_papers")[0]["n"] == 1
+    item = live.execute("SELECT * FROM pipeline_review")[0]
+    assert json.loads(item["detail"])["placement"] == "unsorted"
+    live.execute("UPDATE pipeline_review SET decision = 'approve', decided_by = 'owner'")
+    stats = sync.run(st, live, FakeDrive(STRANGER), log=lambda *_: None)
+    assert stats.hidden == 1
+    assert live.execute("SELECT COUNT(*) AS n FROM pyq_papers")[0]["n"] == 0
+    assert live.execute("SELECT old_subject_id, reason FROM unsorted_papers")[0] == {"old_subject_id": 10, "reason": "code_unknown"}
+
+
+def test_approving_a_review_without_a_target_changes_nothing(tmp_path):
+    from pwpipe import sync
+    st, live = make(tmp_path)
+    live.execute("UPDATE pyq_papers SET subject_id = 10, title = 'x'")
+    live.execute("UPDATE subjects SET scheme = 'CBGS' WHERE id = 10")
+    run(st, live, CBCS)          # code matches subject 10 (CBGS) but the header says CBCS: sibling 11 exists -> a move proposal
+    live.execute("DELETE FROM pipeline_review")
+    live.execute("INSERT INTO pipeline_review (source_id, pyq_paper_id, university, kind, reasons, detail, decision, decided_by) "
+                 "VALUES ('route:z', 1, 'RGPV', 'route', '[\"placement_review\"]', "
+                 "'{\"from_subject_id\": 10, \"to_subject_id\": null, \"placement\": \"review\"}', 'approve', 'owner')")
+    sync.run(st, live, FakeDrive(CBCS), log=lambda *_: None)
+    assert live.execute("SELECT subject_id FROM pyq_papers")[0]["subject_id"] == 10

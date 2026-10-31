@@ -180,10 +180,10 @@ def unsorted_ready(live: Db) -> bool:
     return bool(live.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'unsorted_papers'"))
 
 
-def propose_review(live: Db, paper: dict, pyq: dict, subject: dict, reason: str, place) -> None:
+def propose_review(live: Db, paper: dict, pyq: dict, subject: dict, reason: str, place, target_name: str = "") -> None:
     """A decision a person must make (or just look at): nothing about the page changes yet."""
-    detail = {"from_subject_id": subject["id"], "to_subject_id": place.target_id, "notes": " ".join(place.notes),
-              "placement": place.kind, "reason": place.reason}
+    detail = {"from_subject_id": subject["id"], "to_subject_id": place.target_id, "to_subject": target_name,
+              "notes": " ".join(place.notes), "placement": place.kind, "reason": place.reason}
     now = state.now()
     live.execute(
         """INSERT INTO pipeline_review (source_id, pyq_paper_id, university, title, kind, reasons,
@@ -247,7 +247,7 @@ def placement_outcome(live: Db, paper: dict, pyq: dict, subject: dict, header: s
         return {**result, "status": "waiting"}
     reason = {"move": "move_subject", "review": "placement_review", "new_subject": "new_subject",
               "unsorted": "unsorted"}.get(kind, "placement_review")
-    propose_review(live, paper, pyq, subject, reason, place)
+    propose_review(live, paper, pyq, subject, reason, place, target.name if target else "")
     stats.reviews += 1
     return {**result, "status": "proposed"}
 

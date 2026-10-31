@@ -33,6 +33,7 @@ class SyncStats:
     kept_original: int = 0
     recleaned: int = 0
     moved: int = 0
+    hidden: int = 0
     dropped_stale: int = 0
     reports_restored: int = 0
     reports_recleaned: int = 0
@@ -142,7 +143,10 @@ def pull_decisions(state_db: Db, live: Db, stats: SyncStats) -> None:
         note = row["decision_note"] or ""
         if row["kind"] == "route":
             if row["decision"] == "approve":
-                stats.moved += _apply_move(live, row)
+                moved = _apply_move(live, row)
+                stats.moved += moved
+                if not moved:
+                    stats.hidden += _apply_hide(live, row)
         elif row["decision"] == "approve":
             if state.decide(state_db, pid, ("staged", "review"), ("approved", "ready"), who,
                             f"approved in review. {note}".strip()):
@@ -157,6 +161,22 @@ def pull_decisions(state_db: Db, live: Db, stats: SyncStats) -> None:
         else:
             stats.skipped.append(f"review {row['id']}: unknown decision {row['decision']!r}")
         live.execute("UPDATE pipeline_review SET synced = 1 WHERE id = :i", {"i": row["id"]})
+
+
+def _apply_hide(live: Db, row: dict) -> int:
+    """An approved "take it off the site" item (a router outcome of `unsorted` with no target
+    subject): copy the row to unsorted_papers and delete it from pyq_papers. Fenced on the subject
+    it was in when proposed. Nothing happens for any other kind of proposal."""
+    from . import placement, route_job
+    detail = json.loads(row["detail"] or "{}") if isinstance(row["detail"], str) else row["detail"] or {}
+    if detail.get("placement") != "unsorted" or detail.get("to_subject_id") or not row["pyq_paper_id"]:
+        return 0
+    if not route_job.unsorted_ready(live):
+        return 0
+    place = placement.Decision("unsorted", None, detail.get("reason") or "unsorted", [detail.get("notes") or "approved in review"])
+    pyq = {"id": row["pyq_paper_id"]}
+    subject = {"id": detail["from_subject_id"]}
+    return route_job.hide_paper(live, pyq, subject, place, "")
 
 
 def _apply_move(live: Db, row: dict) -> int:
