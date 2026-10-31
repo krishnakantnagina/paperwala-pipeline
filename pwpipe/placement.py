@@ -141,6 +141,8 @@ def parse_header(text: str) -> HeaderFacts:
             continue
         for m in _CODE.finditer(ln):
             prefix, digits, suffix, elective, elective2, sch = m.groups()
+            if suffix == "N":
+                suffix = ""
             if prefix in _NOT_A_PREFIX or (prefix in ("PH", "MM") and not suffix and len(ln) > 30):
                 continue
             f.code = f"{prefix}-{digits}" + (f"-{suffix}" if suffix else "") + (f"-{elective or elective2}" if (elective or elective2) else "")
@@ -243,7 +245,12 @@ class Catalog:
                 self.by_code.setdefault((s.program, s.key), []).append(s)
 
     def with_code(self, program: str, key: str) -> list[Subject]:
-        return self.by_code.get((program, key), [])
+        found = self.by_code.get((program, key), [])
+        if not found:
+            m = re.fullmatch(r"[A-Z]{2,6}(\d{3,4})", key)
+            if m:           # the site stores "703" where the paper prints "MAM-703"
+                found = self.by_code.get((program, m.group(1)), [])
+        return found
 
     def family(self, program: str, key: str) -> list[Subject]:
         """Subjects whose code is `key` plus more letters: BP803T is the elective bucket of BP803TA..D."""
@@ -265,14 +272,28 @@ class Decision:
     facts: HeaderFacts | None = None
 
 
+_FAMILIES = ({"MBA", "MAM"}, {"Diploma", "D.Pharmacy"})
+
 NAME_OK = 0.60                      # header title vs subject name: same subject
 NAME_STRONG = 0.80
 
 
+# What a printed scheme word allows the subject's scheme to be. "Grading System (GS)" is printed on CBGS-era papers
+# as well, so the generic word agrees with any grading scheme; only credit-based vs grading (or an explicit CBGS
+# against non-grading) is a real contradiction.
+_COMPATIBLE = {
+    "CBCS": {"CBCS"},
+    "CBGS": {"CBGS", "GRADING"},
+    "GRADING": {"CBGS", "GRADING", "NONGRADING"},
+    "NONGRADING": {"NONGRADING", "GRADING"},
+}
+
+
 def _scheme_conflict(header: str, subject: Subject) -> bool:
-    """Both sides name a scheme and they differ. AICTE has no printed word, so only the
-    old schemes can conflict."""
-    return bool(header and subject.scheme and subject.scheme not in ("AICTE",) and header != subject.scheme)
+    """The printed scheme contradicts the subject's. AICTE has no printed word, so it never conflicts."""
+    if not header or not subject.scheme or subject.scheme == "AICTE":
+        return False
+    return subject.scheme not in _COMPATIBLE.get(header, {header})
 
 
 def _semester_ok(header: int | None, subject: Subject) -> bool:
@@ -285,8 +306,10 @@ def decide(text: str, filed: Subject, catalog: Catalog, ocr: bool = False) -> De
     if not f.readable:
         return Decision("unverified", None, "unreadable", ["header could not be read"], f)
     notes: list[str] = []
-    cross = bool(f.program and f.program != filed.program)
+    cross = bool(f.program and f.program != filed.program and {f.program, filed.program} not in _FAMILIES)
     program = f.program if cross else filed.program
+    if ocr and cross and f.code_key and not catalog.with_code(f.program, f.code_key) and catalog.with_code(filed.program, f.code_key):
+        cross, program = False, filed.program      # the printed programme was misread; the code lives in the filed one
     if cross:
         notes.append(f"header says {f.program}, filed under {filed.program}")
 
@@ -297,8 +320,12 @@ def decide(text: str, filed: Subject, catalog: Catalog, ocr: bool = False) -> De
     title_ok = clean_title(f.title)
 
     # ---- 1. the paper's code is the filed subject's code
-    if f.code_key and f.code_key == filed.key and not cross:
-        if not sem_ok and not (ocr and filed_seen >= NAME_STRONG):
+    code_equal = bool(f.code_key) and (f.code_key == filed.key or (
+        filed.key.isdigit() and re.fullmatch(r"[A-Z]{2,6}" + filed.key, f.code_key) is not None))
+    if code_equal and not cross:
+        if not sem_ok and filed_seen >= NAME_STRONG:
+            notes.append(f"header says semester {f.semester}; the code and the name agree, so the semester is ignored")
+        elif not sem_ok:
             return Decision("review", None, "semester_conflict",
                             [f"code {f.code} matches but header says semester {f.semester}, subject is semester {filed.semester}"], f)
         if _scheme_conflict(f.scheme, filed):

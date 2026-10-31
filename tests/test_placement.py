@@ -127,7 +127,7 @@ def test_ocr_semester_misread_does_not_override_a_matching_code_and_name():
     s = subj(1, "B.Pharmacy", 2, "BP-203T", "Bio Chemistry")
     text = "BP-203-T (CBGS)\nB.Pharm I Semester\nExamination, May 2018\nBio-Chemistry\nTime"
     assert P.decide(text, s, cat(s), ocr=True).kind == "keep"
-    assert P.decide(text, s, cat(s), ocr=False).kind == "review"
+    assert P.decide(text, s, cat(s), ocr=False).kind == "keep"        # code and name agree: the semester is ignored either way
 
 
 def test_cross_program_header_is_not_kept_silently():
@@ -215,3 +215,46 @@ def test_scheme_and_month_words_are_never_a_paper_code():
     text = "Total Pages : 6 www.rgpvonline.com\nFIFTHSEMESTER\nSCHEME JULY 2009\nSome Readable Subject Name Here"
     assert P.parse_header(text).code_key == ""
     assert P.parse_header("Total Pages : 3\nSixth Semester\nScheme OCBC-2019\nElectrical Machines Readable").code_key == ""
+
+
+def test_generic_grading_word_is_not_a_conflict_with_a_cbgs_subject():
+    text = "CE-7105\nB.E. VII Semester\nExamination, December 2020\nGrading System (GS)\nEnvironmental Impact Assessment\nTime"
+    s = subj(1, "B.Tech", 7, "CE-7105", "Environmental Impact Assessment", "CBGS", branch="Civil")
+    assert P.decide(text, s, cat(s)).kind == "keep"
+    other = subj(2, "B.Tech", 7, "CE-7105", "Environmental Impact Assessment", "CBCS", branch="Civil")
+    cbcs_text = CBCS.replace("CE-221", "CE-7105").replace("II Semester", "VII Semester").replace("Fluid Mechanics", "Environmental Impact Assessment")
+    assert P.decide(cbcs_text, s, cat(s, other)).kind == "move"
+
+
+def test_first_year_subject_in_either_semester_is_kept_when_code_and_name_agree():
+    text = "BT-104\nB.Tech II Semester\nExamination, November 2022\nBasic Electrical and Electronics Engineering\nTime"
+    s = subj(1, "B.Tech", 1, "BT-104", "Basic Electrical and Electronics Engineering", "AICTE")
+    d = P.decide(text, s, cat(s))
+    assert d.kind == "keep" and any("semester is ignored" in n for n in d.notes)
+
+
+def test_semester_conflict_still_reviews_when_the_name_is_not_there_to_agree():
+    text = "CE-302\nB.Tech II Semester\nExamination, June 2020\nTotal No. of Questions\nTime"
+    s = subj(1, "B.Tech", 3, "CE-302", "Construction Materials")
+    assert P.decide(text, s, cat(s)).kind == "review"
+
+
+def test_mam_paper_prints_the_prefix_and_says_mba_while_the_site_stores_digits():
+    text = "MAM-703\nM.B.A. VII Semester (MBA)\nExamination, November 2018\nAdvertising Management\nTime : Three Hours"
+    s = subj(1, "MAM", 7, "703", "Advertising Management")
+    assert P.decide(text, s, cat(s)).kind == "keep"
+    wrong = subj(2, "MAM", 7, "705", "Legal Framework of Human Resource")
+    d = P.decide(text, wrong, cat(s, wrong))
+    assert (d.kind, d.target_id) == ("move", 1)
+
+
+def test_new_scheme_marker_after_a_code_is_not_part_of_the_code():
+    f = P.parse_header("Total No. of Questions : 8]\nIS-404 (N)\nB.Tech IV Semester\nExamination, June 2025\nComputer Organization\nTime : 3")
+    assert f.code_key == "IS404"
+
+
+def test_misread_programme_does_not_strand_a_paper_whose_code_is_in_the_filed_programme():
+    text = "MVCT-105\nM.Arch I Semester\nExamination, June 2012\nConstruction Technology and Management\nTime"
+    s = subj(1, "M.Tech", 1, "MVCT-105", "Construction Technology and Management")
+    assert P.decide(text, s, cat(s), ocr=True).kind == "keep"
+    assert P.decide(text, s, cat(s), ocr=False).kind != "keep"      # a text layer's programme is trusted
