@@ -155,3 +155,19 @@ def test_sentence_endings_are_not_promo_domains(bl, text):
 
 def test_in_domain_with_www_is_still_promo(bl):
     assert classify_line("visit www.examnotes.in", bl)[0] == AD
+
+
+def test_ocr_that_drops_the_dot_or_misreads_the_first_letter_still_finds_a_long_domain():
+    from pwpipe.blocklist import Blocklist
+    from pwpipe.rules import AD, classify_line
+    bl = Blocklist.load("blocklists/seed.json")
+    for line in ["[थ rgpvonline com", "http:// ww\u201c[\"{.igpvonline .com", "RGPVONLINE com", "www rgpvonline com"]:
+        assert classify_line(line, bl)[0] == AD, line
+
+
+def test_a_sentence_that_merely_contains_the_name_is_not_an_ad():
+    from pwpipe.blocklist import Blocklist
+    from pwpipe.rules import AD, classify_line
+    bl = Blocklist.load("blocklists/seed.json")
+    line = "Explain how rgpvonline communication works in a distributed system and compare with other protocols in detail"
+    assert classify_line(line, bl)[0] != AD

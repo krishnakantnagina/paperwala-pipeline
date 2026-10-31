@@ -137,6 +137,7 @@ def classify_line(text: str, bl: Blocklist) -> tuple[str | None, str]:
     # Dots rejoined across OCR spaces ("pyqonline .com"), then letters only,
     # keeping the dots: "www.pyqonline.com" -> "www.pyqonline.com".
     dotted = re.sub(r"[^a-z0-9.]", "", re.sub(r"\s*\.\s*", ".", lowered))
+    fuzzy = None
     for domain in bl.domains:
         label = _domain_label(domain)
         # The label must carry "www" or a dot + TLD. Not just a TLD after it:
@@ -145,6 +146,15 @@ def classify_line(text: str, bl: Blocklist) -> tuple[str | None, str]:
         if len(label) >= 6 and (f"www{label}" in compact or re.search(
                 rf"{label}\.(?:com|corn|con|cam|co|in|net)", dotted)):
             return AD, f"domain:{domain}"
+        # OCR sometimes drops the dot ("rgpvonline com") or misreads the first letter ("igpvonline .com").
+        # Only for long, specific names on short lines, so a word inside a sentence never matches, and only
+        # after every domain has had its exact try: "MPboardonline.com" is mpboardonline, not a bad apboardonline.
+        if fuzzy is None and len(label) >= 9 and len(compact) <= 70 and (
+                re.search(rf"{label}(?:com|corn|con|cam)$", compact)
+                or re.search(rf"{re.escape(label[1:])}\.(?:com|corn|con|cam)", dotted)):
+            fuzzy = domain
+    if fuzzy:
+        return AD, f"domain~:{fuzzy}"
 
     key = line_key(text)
     if key:
