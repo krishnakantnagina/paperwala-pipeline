@@ -153,6 +153,50 @@ to review (its URL touches question text).
 - **More AI keys:** add `GEMINI_API_KEY_2`…`_5` / `GROQ_API_KEY_2`…`_5` as repo secrets (`gh secret set -f keys.txt`). `keys.py` rotates them, rests a key on 429/5xx, retires it on 401/403, and shares daily counts across workers. Out of quota never fails a paper: it waits.
 - **Live database access** (`LIVE_DB_URL`, `LIVE_DB_TOKEN`) is used only by publish, sync and route.
 
+### Placement v2: file a paper by what its own header says (2026-11-01, branch `rgpv-placement-v2`)
+
+`route.py` could only ask "is the filed subject's name in the header?" and propose a move to a subject the site
+already has. `placement.py` reads the whole identity block (programme, semester, paper code, scheme, session,
+subject) and returns one of six outcomes. It is pure (no network, no database): the caller passes the header
+text and an in-memory catalogue of the site's subjects.
+
+| outcome | meaning | what the router does |
+|---|---|---|
+| `keep` | header agrees with where the paper is filed | nothing (fills year / exam type as before) |
+| `move` | header names exactly one other subject the site has | proposal in `/admin/review`; applied by the router with `ROUTE_AUTO_MOVE=1` |
+| `new_subject` | header is complete, the site has no such subject | proposal (kind `new_subject`) for the owner |
+| `review` | some signals, not enough (two candidates, code reused, scheme or semester conflict) | proposal |
+| `unverified` | nothing in the header to compare (unreadable, no code, no name) | left alone; old name/AI path runs |
+| `unsorted` | contradiction and no candidate (code not on any subject, name unconfirmed) | proposal; with `ROUTE_HIDE_UNSORTED=1` the row leaves `pyq_papers` and is kept in `unsorted_papers` |
+
+Rules that came out of the RGPV pilot (every one has a test in `tests/test_placement.py`):
+
+- **The code decides, the name confirms.** RGPV reuses codes for different subjects and prints the same name under
+  different schemes (CBCS `CE-221` vs CBGS `CE-3002`), so a code alone moves a paper only when exactly one subject has it
+  *and* its name is printed in the header; two candidates go to a person.
+- **Scheme is part of identity.** Same code under another printed scheme (CBCS / CBGS / Grading) goes to the sibling
+  subject that has that scheme, never to the first name match.
+- **Find the name, do not cut it out.** Two-column scans put questions beside the title, so the subject name is searched for
+  anywhere in the header (`name_seen`), not taken from "the line after the session".
+- **Noise never creates anything.** A code needs a 2+ letter prefix (OCR gave `I-121`); a title with a torn word ("N oride")
+  is not a title, so it can never become a `new_subject`.
+- **OCR semesters are not trusted over a matching code and name** ("I Semester" read for "II Semester").
+- **Nothing is deleted.** `hide_paper` copies the row to `unsorted_papers` and deletes it in one transaction, fenced on the
+  subject it was seen under; every action is reversible from that table.
+
+Everything is opt-in: `ROUTE_PLACEMENT=1` turns the engine on; without `ROUTE_AUTO_MOVE` / `ROUTE_HIDE_UNSORTED` it only
+proposes. `hide_unsorted` needs the site's `unsorted_papers` table (site migration 0010); without it the router falls back to a
+proposal. Papers that have not been cleaned yet have no cleaning report to read a header from, so `pwpipe/headers.py` reads
+page 1 itself (text layer, else OCR of the top third only).
+
+Offline tools (they write only under the path you give them, and read a **local copy** of the site database):
+
+    python scripts/rgpv_headers.py --site ../paperwala.db --out ../local/paper_headers_v2.db   # cache every header (resumable)
+    python scripts/eval_placement.py --site ../paperwala.db --headers ../local/paper_headers_v2.db --examples 4
+    python scripts/rehearse.py --site ../paperwala.db --headers ../local/paper_headers_v2.db --out ../local/night
+
+`rehearse.py` applies every decision to a copy of the database and checks `papers on the site + unsorted == papers before`.
+
 ### From the owner's first review decisions (2026-10-28, v0.3.0)
 
 Five MP Board papers sent back with notes; all five now pass on their own, and

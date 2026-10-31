@@ -8,12 +8,13 @@ paper that ran out of AI quota is left 'waiting' and retried next run.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import state
+from . import placement, state
 from .db import Db
 from .keys import QuotaExhausted
 from .publish import LinkIndex
@@ -33,6 +34,29 @@ class RouteStats:
     waiting_site: int = 0
     errors: int = 0
     ai_calls: int = 0
+    moved: int = 0              # placement: moved by the router itself (ROUTE_AUTO_MOVE)
+    hidden: int = 0             # placement: taken off the site into unsorted_papers (ROUTE_HIDE_UNSORTED)
+    reviews: int = 0            # placement: sent to /admin/review
+    unverified: int = 0         # placement: nothing in the header to compare, left as it is
+
+
+@dataclass
+class Flags:
+    """Placement is opt-in: off until the pilot report has been read.
+
+    ROUTE_PLACEMENT=1       use the header-based placement engine (pwpipe/placement.py)
+    ROUTE_AUTO_MOVE=1       apply a `move` decision (one subject the header names exactly) without a person
+    ROUTE_HIDE_UNSORTED=1   take a paper that cannot be placed off the public site (kept in unsorted_papers)
+    Without the last two, every outcome that would change a page is a proposal in /admin/review."""
+    placement: bool = False
+    auto_move: bool = False
+    hide_unsorted: bool = False
+
+    @classmethod
+    def from_env(cls) -> "Flags":
+        def on(k):
+            return os.environ.get(k, "") == "1"
+        return cls(on("ROUTE_PLACEMENT"), on("ROUTE_AUTO_MOVE"), on("ROUTE_HIDE_UNSORTED"))
 
 
 def ensure_table(db: Db) -> None:
@@ -130,13 +154,114 @@ def propose_move(live: Db, paper: dict, pyq: dict, subject: dict, target: dict, 
          "d": json.dumps(detail, ensure_ascii=False), "now": now})
 
 
+class Catalogs:
+    """Placement catalogue per university: one read of the subject list per run."""
+
+    def __init__(self, live: Db):
+        self.live, self.cache = live, {}
+
+    def get(self, university: str) -> placement.Catalog:
+        if university not in self.cache:
+            try:
+                rows = self.live.execute(
+                    "SELECT id, program, branch, semester, code, name, scheme FROM subjects WHERE university = :u",
+                    {"u": university})
+            except Exception:       # a site that has not run migration 0010 yet has no scheme column
+                rows = [dict(r, scheme="") for r in self.live.execute(
+                    "SELECT id, program, branch, semester, code, name FROM subjects WHERE university = :u",
+                    {"u": university})]
+            self.cache[university] = placement.Catalog([
+                placement.Subject(r["id"], r["program"] or "", r["branch"] or "", r["semester"] or 0,
+                                  r["code"] or "", r["name"] or "", r.get("scheme") or "") for r in rows])
+        return self.cache[university]
+
+
+def unsorted_ready(live: Db) -> bool:
+    return bool(live.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'unsorted_papers'"))
+
+
+def propose_review(live: Db, paper: dict, pyq: dict, subject: dict, reason: str, place) -> None:
+    """A decision a person must make (or just look at): nothing about the page changes yet."""
+    detail = {"from_subject_id": subject["id"], "to_subject_id": place.target_id, "notes": " ".join(place.notes),
+              "placement": place.kind, "reason": place.reason}
+    now = state.now()
+    live.execute(
+        """INSERT INTO pipeline_review (source_id, pyq_paper_id, university, title, kind, reasons,
+               original_link, cleaned_link, crops, detail, decision, synced, created_at, updated_at)
+           VALUES (:s, :pp, :u, :t, 'route', :r, '', '', '[]', :d, '', 0,
+               datetime(:now, 'unixepoch'), datetime(:now, 'unixepoch'))
+           ON CONFLICT (source_id) DO NOTHING""",
+        {"s": f"route:{paper['drive_id']}", "pp": pyq["id"], "u": subject["university"],
+         "t": (pyq.get("title") or subject["name"])[:255], "r": json.dumps([reason]),
+         "d": json.dumps(detail, ensure_ascii=False), "now": now})
+
+
+def hide_paper(live: Db, pyq: dict, subject: dict, place, header: str) -> int:
+    """Copy the row into unsorted_papers, then delete it from pyq_papers, in one transaction.
+    Fenced on the subject it was seen under, so a row an admin moved meanwhile is left alone."""
+    now = state.now()
+    live.batch([
+        ("""INSERT INTO unsorted_papers (old_paper_id, old_subject_id, old_subject_name, university, program,
+                year, exam_type, medium, title, drive_link, preview_link, file_size, reason, detail, header_text, created_at)
+            SELECT p.id, s.id, s.name, s.university, s.program, p.year, p.exam_type, p.medium, p.title,
+                   p.drive_link, p.preview_link, p.file_size, :reason, :detail, :header, datetime(:now, 'unixepoch')
+            FROM pyq_papers p JOIN subjects s ON s.id = p.subject_id
+            WHERE p.id = :p AND p.subject_id = :s""",
+         {"p": pyq["id"], "s": subject["id"], "reason": place.reason, "detail": " ".join(place.notes)[:300],
+          "header": (header or "")[:1500], "now": now}),
+        ("DELETE FROM pyq_papers WHERE id = :p AND subject_id = :s AND EXISTS "
+         "(SELECT 1 FROM unsorted_papers WHERE old_paper_id = :p)", {"p": pyq["id"], "s": subject["id"]}),
+    ])
+    return 1
+
+
+def placement_outcome(live: Db, paper: dict, pyq: dict, subject: dict, header: str, catalogs: Catalogs,
+                      cands: "Candidates", flags: Flags, stats: RouteStats, can_hide: bool, can_propose: bool):
+    """Route one paper by what its header says. None = nothing to compare, use the old name/AI path."""
+    cat = catalogs.get(subject["university"])
+    filed = cat.by_id.get(subject["id"])
+    if filed is None:
+        return None
+    place = placement.decide(header, filed, cat, ocr=True)
+    if place.kind == "unverified":
+        stats.unverified += 1
+        return None
+    fills = plan_paper(header, pyq, subject, cands.get(subject["university"], subject["program"]), None).fills
+    stats.filled += apply_fills(live, pyq["id"], fills) if fills else 0
+    result = {"placement": place.kind, "reason": place.reason, "fills": fills, "notes": place.notes}
+    kind = place.kind
+    target = cat.by_id.get(place.target_id) if place.target_id else None
+    if kind == "keep":
+        stats.confirmed += 1
+        return {**result, "status": "done"}
+    if kind == "move" and target is not None and flags.auto_move:
+        moved = live.execute("UPDATE pyq_papers SET subject_id = :to WHERE id = :p AND subject_id = :fr RETURNING id",
+                             {"to": target.id, "p": pyq["id"], "fr": subject["id"]})
+        stats.moved += len(moved)
+        return {**result, "status": "done", "moved_to": target.id}
+    if kind == "unsorted" and flags.hide_unsorted and can_hide:
+        stats.hidden += hide_paper(live, pyq, subject, place, header)
+        return {**result, "status": "done", "hidden": True}
+    if not can_propose:
+        stats.waiting_site += 1
+        return {**result, "status": "waiting"}
+    reason = {"move": "move_subject", "review": "placement_review", "new_subject": "new_subject",
+              "unsorted": "unsorted"}.get(kind, "placement_review")
+    propose_review(live, paper, pyq, subject, reason, place)
+    stats.reviews += 1
+    return {**result, "status": "proposed"}
+
+
 def run(state_db: Db, live: Db, drive, ai: AI | None, limit: int, max_minutes: float,
-        log=print) -> RouteStats:
+        log=print, flags: Flags | None = None) -> RouteStats:
     state.migrate(state_db)
     ensure_table(state_db)
     stats = RouteStats()
     deadline = time.monotonic() + max_minutes * 60
     cands = Candidates(live)
+    flags = flags or Flags.from_env()
+    catalogs = Catalogs(live)
+    can_hide = flags.hide_unsorted and unsorted_ready(live)
     index = LinkIndex(live)
     workdir = Path(tempfile.mkdtemp(prefix="pwroute-"))
     ai_out = False
@@ -160,6 +285,13 @@ def run(state_db: Db, live: Db, drive, ai: AI | None, limit: int, max_minutes: f
             drive.download(paper["report_ref"], rpath)
             header = header_text(json.loads(rpath.read_text(encoding="utf-8")))
             rpath.unlink(missing_ok=True)
+            if flags.placement:
+                res = placement_outcome(live, paper, pyq, subject, header, catalogs, cands, flags, stats,
+                                        can_hide, can_propose)
+                if res is not None:
+                    _record(state_db, pid, res.pop("status"), res)
+                    log(f"PLACE {pid}  {res['placement']}/{res['reason']}")
+                    continue
             candidates = cands.get(subject["university"], subject["program"])
             try:
                 plan = plan_paper(header, pyq, subject, candidates, None if ai_out else ai)
