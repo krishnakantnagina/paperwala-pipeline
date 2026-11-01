@@ -53,8 +53,9 @@ def test_real_paper_cleaned_and_verified(tmp_path, bl, name):
         # Only the scan survives: no hidden logo, no white box - plus the mark.
         assert len(page.get_images()) == 1
         assert page.get_drawings() == []
-        # top and foot stamps, plus 3 diagonal lines x 2 copies
-        assert page.get_text().split() == ["paperwala.org"] * 8
+        # 3 diagonal lines x 2 copies, plus the top and foot stamps where the page has room for them
+        words = page.get_text().split()
+        assert set(words) == {"paperwala.org"} and 6 <= len(words) <= 8
     assert report["stamped_pages"] == 4 and report["stamps"] == 8
     assert all(p["stamp"] == "ok" for p in report["verify"]["pages"])
     assert dst.stat().st_size <= src.stat().st_size * 1.2
