@@ -85,7 +85,7 @@ jobs:
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
         run: >
           python -m pwpipe work
-          --catalog "${{ inputs.catalog }}"
+          --catalog "${{ inputs.catalog || vars.WORK_CATALOG }}"
           --limit ${{ needs.plan.outputs.per_worker }}
           --max-minutes ${{ inputs.max_minutes || '300' }}
           --owner "gha-${{ github.run_id }}-${{ matrix.worker }}"
@@ -116,7 +116,7 @@ jobs:
           if [ "${{ github.event_name == 'schedule' || inputs.chain }}" = "true" ] &&
              python -m pwpipe next work --since "${{ needs.plan.outputs.since }}" \
                --owner "gha-${{ github.run_id }}-"; then
-            bash scripts/start_run.sh work.yml -f catalog="${{ inputs.catalog }}" -f limit=8000 \
+            bash scripts/start_run.sh work.yml -f catalog="${{ inputs.catalog || vars.WORK_CATALOG }}" -f limit=8000 \
               -f workers=16 -f max_minutes=300 -f review_all=false -f chain=true
           fi
           # Papers this run approved go live and get routed without waiting.
