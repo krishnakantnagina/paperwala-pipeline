@@ -234,9 +234,15 @@ def test_first_year_subject_in_either_semester_is_kept_when_code_and_name_agree(
 
 
 def test_semester_conflict_still_reviews_when_the_name_is_not_there_to_agree():
+    text = "CE-502\nB.Tech II Semester\nExamination, June 2020\nTotal No. of Questions\nTime"
+    s = subj(1, "B.Tech", 3, "CE-502", "Construction Materials")
+    assert P.decide(text, s, cat(s)).kind == "review"
+
+
+def test_semester_misread_is_ignored_when_the_code_itself_carries_the_semester():
     text = "CE-302\nB.Tech II Semester\nExamination, June 2020\nTotal No. of Questions\nTime"
     s = subj(1, "B.Tech", 3, "CE-302", "Construction Materials")
-    assert P.decide(text, s, cat(s)).kind == "review"
+    assert P.decide(text, s, cat(s)).kind == "keep"
 
 
 def test_mam_paper_prints_the_prefix_and_says_mba_while_the_site_stores_digits():
@@ -258,3 +264,30 @@ def test_misread_programme_does_not_strand_a_paper_whose_code_is_in_the_filed_pr
     s = subj(1, "M.Tech", 1, "MVCT-105", "Construction Technology and Management")
     assert P.decide(text, s, cat(s), ocr=True).kind == "keep"
     assert P.decide(text, s, cat(s), ocr=False).kind != "keep"      # a text layer's programme is trusted
+
+
+def test_the_month_march_is_not_the_programme_m_arch():
+    text = "CB-604 (GS)\nB.Tech. VI Semester\nBalance sheet on March 31, 2018\nExamination, May 2024\nFinancial and Cost Accounting\nTime"
+    s = subj(1, "B.Tech", 6, "CB-604", "Financial and Cost Accounting", "AICTE")
+    d = P.decide(text, s, cat(s))
+    assert d.kind == "keep" and d.facts.program == "B.Tech"
+
+
+def test_spaced_code_and_roman_name_keep_the_paper_where_it_is():
+    text = "PY - 603\nB.Pharmacy VI Semester\nExamination, June 2013\nPharmaceutical Chemistry VII\nTime : Three Hours"
+    s = subj(1, "B.Pharmacy", 6, "PY-603", "Pharmaceutical Chemistry 7")
+    assert P.decide(text, s, cat(s)).kind == "keep"
+
+
+def test_option_digit_in_brackets_is_the_sites_dash_digit():
+    text = "MCA-304 (1)\nM.C.A. III Semester\nExamination, November 2022\nMachine Learning\nTime : Three Hours"
+    s = subj(1, "MCA", 3, "304-1", "Machine Learning")
+    other = subj(2, "MCA", 3, "304", "Theory of Computation")
+    assert P.decide(text, s, cat(s, other)).kind == "keep"
+
+
+def test_slash_list_of_codes_includes_the_filed_one():
+    text = "CS/CT/CO/CI/CY-304 (GS)\nB.Tech. III Semester\nExamination, December 2023\nDigital Systems\nTime"
+    s = subj(1, "B.Tech", 3, "CI-304", "Digital Systems", "AICTE")
+    other = subj(2, "B.Tech", 3, "CY-304", "Something Else", "AICTE")
+    assert P.decide(text, s, cat(s, other)).kind == "keep"

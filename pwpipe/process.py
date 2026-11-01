@@ -16,8 +16,10 @@ from .crops import page_thumb, region_crop
 from .detect import AD, LOW_TEXT_WORDS, classify_lines, merge_found_ads, plan_page
 from .ocr import DEFAULT_LANGS, OTSU, SAUVOLA, group_lines, ocr_image
 from .pdf import analyze, file_sha256, open_pdf, raster_page
+from .rotated import rotated_ads
 from .ruled import struck_through_ads
-from .stamp import find_stamp_boxes
+from .stamp import add_diagonal_marks, find_stamp_boxes
+from .watermark import grey_stamp_mask
 from .verify import verify
 
 
@@ -58,11 +60,13 @@ def _plans(pages, bl: Blocklist) -> list:
 
 def process_paper(src: str | Path, dst: str | Path, bl: Blocklist, paper_id: str = "",
                   crops_dir: str | Path | None = None, langs: str = DEFAULT_LANGS,
-                  stamp: bool = True) -> dict:
+                  stamp: bool = True, grey: bool = True, diagonal: bool = True) -> dict:
     src, dst = Path(src), Path(dst)
     info = analyze(src)
     doc = open_pdf(src)
     pages, before = [], {}
+    grey_masks = {}
+    sideways = False
     second_looks = []
     try:
         for page in info.pages:
@@ -71,10 +75,26 @@ def process_paper(src: str | Path, dst: str | Path, bl: Blocklist, paper_id: str
             # URLs with a printed rule through them read as nothing above.
             if merge_found_ads(lines, struck_through_ads(raster.image, bl, langs), bl):
                 second_looks.append(f"page {page.number}: URL under a printed rule")
+            # A sideways link is stamped on every page, so two sample pages (first, last) tell whether
+            # to read the others sideways too: that reading costs two more OCR passes per page.
+            if sideways or page.number in (0, info.page_count - 1):
+                found = rotated_ads(raster.image, bl)
+                if found:
+                    sideways = True
+                if merge_found_ads(lines, found, bl):
+                    second_looks.append(f"page {page.number}: URL printed sideways")
             plan = plan_page(page, raster.image.size, lines, bl)
             stamps = []
             if stamp and not plan.drop and "rotated_page" not in plan.review:
-                stamps = find_stamp_boxes(raster.image, [b for l in lines for _, _, b in l.words])
+                ox, oy = raster.origin
+                sx, sy = raster.scale
+                visible = ((0 - ox) / sx, (0 - oy) / sy, (page.width - ox) / sx, (page.height - oy) / sy)
+                stamps = find_stamp_boxes(raster.image, [b for l in lines for _, _, b in l.words], visible)
+            if grey and page.is_scan and not plan.drop:
+                import numpy as np
+                mask = grey_stamp_mask(np.asarray(raster.image.convert("L")))
+                if mask is not None:
+                    grey_masks[page.number] = mask
             pages.append((page, (raster.image.size, raster.origin, raster.scale, threshold),
                           lines, stamps))
             # Keep pixels only where a crop will be drawn; a 30-page scan held
@@ -90,6 +110,9 @@ def process_paper(src: str | Path, dst: str | Path, bl: Blocklist, paper_id: str
         # cleaned again; every round is verified from scratch.
         for round_ in range(1 + MAX_SECOND_LOOKS):
             plans = _plans(pages, bl)
+            for plan in plans:
+                if plan.mode == "rebuild" and not plan.drop:
+                    plan.grey_mask = grey_masks.get(plan.number)
             review = sorted({reason for p in plans for reason in p.review})
             if plans and all(p.drop for p in plans):
                 # A file that is nothing but ads is not a paper; never publish empty.
@@ -113,6 +136,13 @@ def process_paper(src: str | Path, dst: str | Path, bl: Blocklist, paper_id: str
         doc.close()
     if not result.ok:
         review.append("verify_failed")
+    diagonal_marks = 0
+    if diagonal:
+        try:
+            diagonal_marks = add_diagonal_marks(dst)
+        except Exception as exc:               # the unmarked, verified file stays as it was
+            review.append("diagonal_mark_failed")
+            second_looks.append(f"diagonal marks not added: {exc}")
 
     crops = []
     if crops_dir is not None:
@@ -144,6 +174,8 @@ def process_paper(src: str | Path, dst: str | Path, bl: Blocklist, paper_id: str
         "pages_dropped": sum(p.drop for p in plans),
         "scan_pages": sum(p.is_scan for p in info.pages),
         "stamped_pages": sum(1 for p in plans if p.stamp_boxes and not p.drop),
+        "diagonal_marks": diagonal_marks,
+        "grey_watermark_pages": sum(1 for p in plans if p.grey_mask is not None and not p.drop),
         "stamps": sum(len(p.stamp_boxes) for p in plans if not p.drop),
         "image_sha1": sorted({i.sha1 for p in info.pages for i in p.images}),
         "changed": any(p.applied_regions or p.drop for p in plans),

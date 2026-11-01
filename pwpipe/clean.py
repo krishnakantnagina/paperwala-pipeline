@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import numpy as np
 import pymupdf
 from PIL import Image, ImageDraw
 
@@ -63,13 +64,18 @@ def _rebuild_page(src: pymupdf.Document, out: pymupdf.Document, info, plan: Page
     regions = plan.applied_regions
     is_jpeg = "DCT" in image.filter
 
-    if is_jpeg and not regions:
+    mask = plan.grey_mask
+    if is_jpeg and not regions and mask is None:
         # Original JPEG bytes pass through untouched: no generation loss.
         page.insert_image(rect, stream=src.extract_image(info.scan_xref)["image"],
                           keep_proportion=False)
         return
 
     img = pixmap_to_image(pymupdf.Pixmap(src, info.scan_xref))
+    if mask is not None and mask.shape == (img.height, img.width):
+        arr = np.asarray(img).copy()
+        arr[mask] = 255                       # a grey diagonal watermark (watermark.py)
+        img = Image.fromarray(arr, img.mode)
     if regions:
         draw = ImageDraw.Draw(img)
         white = 255 if img.mode == "L" else (255, 255, 255)

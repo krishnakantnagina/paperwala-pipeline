@@ -250,3 +250,89 @@ def test_ink_smear_boxed_as_a_word_does_not_block_a_url(bl):
     smear = OcrLine("रैक", (106, 1859, 570, 2323), 57, None, "", [("रैक", 57, (106, 1859, 570, 2323))])
     plan = plan_page(PAGE, SIZE, questions(bl) + [smear, url], bl)
     assert len(plan.applied_regions) == 1 and "conflict" not in plan.review
+
+
+def test_stamp_is_placed_inside_the_visible_page_when_the_scan_is_bigger_than_the_page():
+    import numpy as np
+    from PIL import Image
+    from pwpipe.stamp import find_stamp_boxes
+    img = Image.fromarray(np.full((1000, 800), 255, dtype=np.uint8))
+    # the page shows only rows 100..900: the picture's own edges are off the page
+    boxes = find_stamp_boxes(img, [], visible=(0, 100, 800, 900))
+    assert len(boxes) == 2
+    for x0, y0, x1, y1 in boxes:
+        assert y0 >= 100 and y1 <= 900
+
+
+def test_a_link_printed_sideways_is_found_and_boxed_tall(bl):
+    from PIL import Image, ImageDraw, ImageFont
+    from pwpipe.rotated import rotated_ads
+    try:
+        font = ImageFont.truetype("arial.ttf", 30)
+    except OSError:
+        pytest.skip("no TrueType font on this machine")
+    strip = Image.new("L", (560, 44), 255)
+    ImageDraw.Draw(strip).text((6, 4), "http://www.upboardonline.com", fill=0, font=font)
+    page = Image.new("L", (1000, 1400), 255)
+    page.paste(strip.transpose(Image.Transpose.ROTATE_270), (480, 300))      # reads top-to-bottom
+    found = rotated_ads(page, bl)
+    assert found, "the vertical link was not read"
+    x0, y0, x1, y1 = found[0].bbox
+    assert (y1 - y0) > 3 * (x1 - x0)                      # tall and narrow
+    assert 440 <= x0 and x1 <= 560 and 280 <= y0 and y1 <= 900
+
+
+def test_an_ad_box_beside_a_question_is_a_separate_line():
+    from pwpipe.ocr import Word, group_lines
+    def w(text, x0, x1): return Word(text, 90.0, 1, 1, 1, x0, 100, x1, 120)
+    line = group_lines([w("India", 100, 160), w("population", 170, 280), w("Send", 520, 580), w("your", 590, 640)])
+    assert [l.text for l in line] == ["India population", "Send your"]
+
+
+def test_url_with_garbled_middle_is_erased_whole(bl):
+    """1490: "http://fwww. répjvon line.com" matched only by its ending used to erase
+    "http://fwww." alone and leave "rgpvonline.com" on the page."""
+    from pwpipe.detect import _erase_part
+    from pwpipe.rules import _domain_label
+    ad = line("http://fwww. répjvon line.com", 20, x0=370, x1=790, bl=bl)
+    assert ad.reason.startswith("domain:")
+    box, text, kept = _erase_part(ad, [_domain_label(d) for d in bl.domains])
+    assert text == "http://fwww. répjvon line.com" and kept == []
+    assert box[0] == 370 and box[2] >= 780
+
+
+def test_url_walk_stops_at_real_words(bl):
+    """The walk never takes a long word, Devanagari, or anything when no ".com" ends it."""
+    from pwpipe.detect import _erase_part
+    from pwpipe.rules import _domain_label
+    labels = [_domain_label(d) for d in bl.domains]
+    ad = line("see www.rgpvonline.com for papers", 20, bl=bl)
+    box, text, kept = _erase_part(ad, labels)
+    assert "see" not in text and "papers" not in text
+    ad = line("www. Explanation of equilibrium constants here", 20, bl=bl)
+    ad.reason = "domain:rgpvonline.com"
+    part = _erase_part(ad, labels)
+    assert part is None or "Explanation" not in part[1]
+
+
+def test_cut_off_url_tail_is_erased_and_paper_code_kept(bl):
+    """891 and 1385: only "nline.com" / "ine.com" of the URL reached OCR; the paper code
+    "FRM 308" printed over the rest must survive."""
+    from pwpipe.detect import _erase_part
+    from pwpipe.rules import _domain_label
+    labels = [_domain_label(d) for d in bl.domains]
+    for text, gone in (("nline.com", "nline.com"), ("FRM 308 ine.com", "ine.com")):
+        ad = line(text, 20, x0=7, x1=137, bl=bl)
+        assert ad.reason.startswith("domain:")
+        box, erased, kept = _erase_part(ad, labels)
+        assert erased == gone
+        assert len(kept) == len(text.split()) - 1       # every other word is kept
+
+
+def test_plain_words_ending_dot_com_are_not_a_url_tail(bl):
+    from pwpipe.detect import _label_tail_word
+    from pwpipe.rules import _domain_label
+    labels = [_domain_label(d) for d in bl.domains]
+    assert _label_tail_word("nline.com", labels) and _label_tail_word("ine.com", labels)
+    assert not _label_tail_word("ab.com", labels) and not _label_tail_word("physics.com", labels)
+    assert not _label_tail_word("line", labels)

@@ -89,6 +89,8 @@ def domain_allowed(domain: str, bl: Blocklist) -> bool:
     return any(domain == a or domain.endswith("." + a) for a in bl.allow_domains)
 
 
+# A word run into the technology name by the line rejoining ("in ASP.NET" -> "inasp.net") is still the technology.
+_DOTNET_LABEL = re.compile(r"(?:in|of|on|and|the|to|using|with|for|a|an)?(?:asp|ado|vb|vbscript|jscript|c|f|j|visual|dot|ms|xml|wcf|wpf|mvc|entity)")
 _WEB_ONLY_TLDS = {"com", "net", "org", "online", "info", "site", "xyz"}
 
 
@@ -108,6 +110,8 @@ def _plausible_domain(domain: str, text: str) -> bool:
     label = domain.split(".")[0]
     if re.search(r"(?:https?:/*|www\.?)\s*" + re.escape(label), lowered):
         return True
+    if domain.endswith(".net") and _DOTNET_LABEL.fullmatch(label):
+        return False        # ADO.NET, ASP.NET, VB.NET: Microsoft technologies in RGPV questions, not websites
     if len(label) < 3 or domain.rsplit(".", 1)[-1] not in _WEB_ONLY_TLDS:
         return False
     m = re.search(re.escape(domain).replace(r"\.", r"\s*\.\s*"), text, re.IGNORECASE)

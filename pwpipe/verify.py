@@ -67,7 +67,7 @@ def _tokens(lines, plan: PagePlan | None = None) -> Counter:
     return out
 
 
-def _identical_outside(before: Image.Image, after: Image.Image, boxes, ignore=()) -> bool:
+def _identical_outside(before: Image.Image, after: Image.Image, boxes, ignore=(), mask=None) -> bool:
     """Not one pixel differs outside the erased boxes and the mark."""
     if before.size != after.size:
         return False
@@ -76,6 +76,8 @@ def _identical_outside(before: Image.Image, after: Image.Image, boxes, ignore=()
     keep = np.ones(a.shape, dtype=bool)
     for x0, y0, x1, y1 in list(boxes) + list(ignore):
         keep[y0:y1, x0:x1] = False
+    if mask is not None and mask.shape == keep.shape:
+        keep &= ~mask
     return bool(np.array_equal(a[keep], b[keep]))
 
 
@@ -84,15 +86,15 @@ def _inside_any(box, boxes) -> bool:
     return any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in boxes)
 
 
-def _proven(proven, before, after, boxes, ignore) -> bool:
+def _proven(proven, before, after, boxes, ignore, mask=None) -> bool:
     # Computed only when needed: most pages never ask.
     if proven is None:
-        return _identical_outside(before, after, boxes, ignore)
+        return _identical_outside(before, after, boxes, ignore, mask)
     return proven
 
 
 def _pixel_check(before: Image.Image, after: Image.Image, boxes, lossless: bool,
-                 ignore=()) -> str | None:
+                 ignore=(), mask=None) -> str | None:
     """``boxes`` must come out white; ``ignore`` (the mark) may hold anything."""
     if before.size != after.size:
         return f"raster size {after.size} != {before.size}"
@@ -104,6 +106,8 @@ def _pixel_check(before: Image.Image, after: Image.Image, boxes, lossless: bool,
     skip = np.zeros(a.shape, dtype=bool)
     for x0, y0, x1, y1 in ignore:
         skip[y0:y1, x0:x1] = True
+    if mask is not None and mask.shape == skip.shape:
+        skip |= mask                          # whitened grey watermark: may differ
     inside &= ~skip
     diff = np.abs(a - b)
     outside = ~inside & ~skip
@@ -204,7 +208,7 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
             lossless = plan.mode == "rebuild" and "DCT" not in next(
                 i.filter for i in src_page.images if i.xref == src_page.scan_xref)
             ignore = plan.stamp_boxes if render else []
-            problem = _pixel_check(before.image, after_img, boxes, lossless, ignore)
+            problem = _pixel_check(before.image, after_img, boxes, lossless, ignore, plan.grey_mask)
             if problem:
                 result.fail(f"page {plan.number}: {problem}")
             stat["pixels"] = problem or "ok"
@@ -255,11 +259,11 @@ def verify(src_path: str | Path, src_info: PdfInfo, plans: list[PagePlan], bl: B
                 stat["retention"] = round(retention, 4)
                 if retention < MIN_RETENTION:
                     msg = f"page {plan.number}: retention {retention:.3f} < {MIN_RETENTION}"
-                    proven = _proven(proven, before.image, after_img, boxes, ignore)
+                    proven = _proven(proven, before.image, after_img, boxes, ignore, plan.grey_mask)
                     (result.notes.append if proven else result.fail)(msg)
             elif total - found > MAX_ABS_LOSS:
                 msg = f"page {plan.number}: lost {total - found} of {total} words"
-                proven = _proven(proven, before.image, after_img, boxes, ignore)
+                proven = _proven(proven, before.image, after_img, boxes, ignore, plan.grey_mask)
                 (result.notes.append if proven else result.fail)(msg)
             result.pages.append(stat)
             if keep_rasters_for and plan.number in keep_rasters_for:

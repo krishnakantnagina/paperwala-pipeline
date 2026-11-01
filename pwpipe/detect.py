@@ -103,6 +103,9 @@ class PagePlan:
     # Raster boxes for the "paperwala.org" marks (stamp.py): top and bottom,
     # each only if that edge has room.
     stamp_boxes: list[tuple[int, int, int, int]] = field(default_factory=list)
+    # Pixels of a grey diagonal watermark to whiten on a scan page (watermark.py); a bool array
+    # the size of the raster, or None. Not serialised: to_dict reports the pixel count.
+    grey_mask: object = None
     lines: list[OcrLine] = field(default_factory=list)
 
     @property
@@ -116,7 +119,12 @@ class PagePlan:
                    for r in self.applied_regions for b in r.boxes)
 
     def to_dict(self) -> dict:
-        d = asdict(self)
+        mask, self.grey_mask = self.grey_mask, None      # asdict would deep-copy the array
+        try:
+            d = asdict(self)
+        finally:
+            self.grey_mask = mask
+        d["grey_pixels"] = 0 if mask is None else int(mask.sum())
         d["lines"] = [{"text": l.text, "bbox": list(l.bbox), "conf": round(l.conf, 1),
                        "kind": l.kind, "reason": l.reason, "region": l.region}
                       for l in self.lines]
@@ -240,6 +248,50 @@ def line_labels(line, labels: list[str]) -> list[str]:
     return labels
 
 
+_TLD_END = re.compile(r"\.(?:com|corn|in|net|org|co)\W*$")
+MAX_URL_GAP = 3        # mangled words allowed between "www." and the ".com" that ends the URL
+
+
+def _anchored_url_tail(words, picked: set[int]) -> set[int]:
+    """The rest of a URL that starts with a recognisable "http"/"www" word.
+
+    OCR mangles the middle of a URL printed small next to other ink ("http://fwww. répjvon
+    line.com": only "line.com" matched, so the erase covered "http://fwww." and left
+    "rgpvonline.com" on the page). From an anchor word, the next few short, non-Devanagari
+    words up to the first one that ends in a TLD are part of the URL. Nothing is taken
+    unless such an ending is found, and a long word or Devanagari stops the walk.
+    """
+    extra: set[int] = set()
+    for i in picked:
+        c = re.sub(r"[^a-z0-9]", "", words[i][0].lower())
+        if "www" not in c and "http" not in c:
+            continue
+        chain = []
+        for j in range(i + 1, min(i + 2 + MAX_URL_GAP, len(words))):
+            text = words[j][0]
+            if re.search(r"[ऀ-ॿ]", text) or len(text) > 16:
+                break
+            chain.append(j)
+            if _TLD_END.search(text.lower()):
+                extra |= set(chain)
+                break
+    return extra
+
+
+def _label_tail_word(text: str, labels: list[str]) -> bool:
+    """The end of a site name plus its TLD: "nline.com", "ine.com". A URL cut off at the page
+    edge, or overprinted by a paper code, reaches OCR as only its last piece. Needs 3+
+    letters before the dot and a listed site name (6+ letters) that ends with them."""
+    m = _TAIL.match(text.lower())
+    if not m:
+        return False
+    stem = re.sub(r"[^a-z0-9]", "", m.group(1))
+    if len(stem) < 3:
+        return False
+    return any(len(c) >= 6 and c.endswith(stem)
+               for c in (re.sub(r"[^a-z0-9]", "", l) for l in labels))
+
+
 def _erase_part(line: OcrLine, labels: list[str]):
     """What erasing an ad line removes, and which of its words must survive.
 
@@ -261,6 +313,8 @@ def _erase_part(line: OcrLine, labels: list[str]):
     # One garbled word between two URL words is the URL's middle.
     picked |= {i + 1 for i in picked if i + 2 in picked and i + 1 not in picked
                and _garbled_middle(words[i + 1][0])}
+    picked |= _anchored_url_tail(words, picked)
+    picked |= {i for i, (t, _, _) in enumerate(words) if _label_tail_word(t, labels)}
     if not picked:
         return None
     order = sorted(picked)

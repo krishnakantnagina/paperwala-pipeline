@@ -155,8 +155,31 @@ def parse_tsv(tsv: str) -> list[Word]:
     return words
 
 
+COLUMN_GAP = 2.5       # a gap this many word heights wide (and at least COLUMN_GAP_MIN px) is a column, not a space
+COLUMN_GAP_MIN = 40
+
+
+def _split_columns(line: Line) -> list[Line]:
+    """Tesseract reads across a page: a question's last words and the ad box printed beside it become one
+    line, so the ad can not be erased without the question (owner's "identified but did not remove",
+    2026-11-01, BSEB Geography). A wide empty gap inside a line starts a new line."""
+    words = sorted(line.words, key=lambda w: w.x0)
+    if len(words) < 2:
+        return [line]
+    heights = sorted(w.y1 - w.y0 for w in words)
+    limit = max(COLUMN_GAP_MIN, COLUMN_GAP * heights[len(heights) // 2])
+    out, cur = [], [words[0]]
+    for prev, w in zip(words, words[1:]):
+        if w.x0 - prev.x1 > limit:
+            out.append(Line(words=cur))
+            cur = []
+        cur.append(w)
+    out.append(Line(words=cur))
+    return out
+
+
 def group_lines(words: list[Word]) -> list[Line]:
     lines: dict[tuple[int, int, int], Line] = {}
     for w in words:
         lines.setdefault((w.block, w.par, w.line), Line()).words.append(w)
-    return list(lines.values())
+    return [part for line in lines.values() for part in _split_columns(line)]

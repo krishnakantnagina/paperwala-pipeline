@@ -171,3 +171,13 @@ def test_a_sentence_that_merely_contains_the_name_is_not_an_ad():
     bl = Blocklist.load("blocklists/seed.json")
     line = "Explain how rgpvonline communication works in a distributed system and compare with other protocols in detail"
     assert classify_line(line, bl)[0] != AD
+
+
+@pytest.mark.parametrize("text", ["ADO.NET. 74", "Explain the architecture of ASP.NET", "Difference between ADO.NET and ASP.NET?",
+                                  "What are the drawbacks of using VB.NET in ASP.NET? 7"])
+def test_dotnet_technology_names_are_not_websites(bl, text):
+    assert classify_line(text, bl)[0] is None
+
+
+def test_a_real_net_site_is_still_an_ad(bl):
+    assert classify_line("Download from www.paperfree.net", bl)[0] == AD
