@@ -40,6 +40,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - name: Route
         env:
+          ROUTE_CATALOG: ${{ vars.WORK_CATALOG }}
           PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
           PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
@@ -74,6 +75,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - name: Start the next run
         env:
+          ROUTE_CATALOG: ${{ vars.WORK_CATALOG }}
           GH_TOKEN: ${{ github.token }}
           PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
           PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}

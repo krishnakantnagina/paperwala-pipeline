@@ -65,14 +65,22 @@ def ensure_table(db: Db) -> None:
         attempts INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)""")
 
 
-def _todo(db: Db, limit: int) -> list[dict]:
+def route_catalog() -> str:
+    """The one catalog routing is limited to (env ROUTE_CATALOG), or '' for all of them."""
+    return os.environ.get("ROUTE_CATALOG", "").strip()
+
+
+def _todo(db: Db, limit: int, catalog: str | None = None) -> list[dict]:
+    catalog = route_catalog() if catalog is None else catalog
     return db.execute(
         """SELECT p.* FROM papers p LEFT JOIN routing r ON r.drive_id = p.drive_id
            WHERE p.report_ref IS NOT NULL
              AND p.stage IN ('approved', 'published', 'live_verified')
+             AND (:c = '' OR p.catalog = :c)
              AND (r.drive_id IS NULL OR r.status = 'waiting'
                 OR (r.status = 'error' AND r.attempts < :m))
-           ORDER BY p.updated_at LIMIT :n""", {"m": MAX_ATTEMPTS, "n": limit})
+           ORDER BY p.updated_at LIMIT :n""",
+        {"m": MAX_ATTEMPTS, "n": limit, "c": catalog})
 
 
 def _record(db: Db, drive_id: str, status: str, result: dict) -> None:

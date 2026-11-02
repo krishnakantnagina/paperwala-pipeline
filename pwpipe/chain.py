@@ -47,7 +47,7 @@ def left_and_moved(db: Db, job: str, since: int, owner: str) -> tuple[int, int]:
                 _count(db, """SELECT 1 FROM events
                               WHERE at >= :t AND owner LIKE :o AND status = 'done'""", p))
     if job == "route":
-        from .route_job import MAX_ATTEMPTS, ensure_table
+        from .route_job import MAX_ATTEMPTS, ensure_table, route_catalog
         ensure_table(db)
         # Same filter as route_job._todo. 'waiting' rows (no AI quota) are
         # work left, but re-checking them without quota is not progress.
@@ -55,9 +55,10 @@ def left_and_moved(db: Db, job: str, since: int, owner: str) -> tuple[int, int]:
                               LEFT JOIN routing r ON r.drive_id = p.drive_id
                               WHERE p.report_ref IS NOT NULL
                                 AND p.stage IN ('approved', 'published', 'live_verified')
+                                AND (:c = '' OR p.catalog = :c)
                                 AND (r.drive_id IS NULL OR r.status = 'waiting'
                                      OR (r.status = 'error' AND r.attempts < :m))""",
-                       {"m": MAX_ATTEMPTS}),
+                       {"m": MAX_ATTEMPTS, "c": route_catalog()}),
                 _count(db, """SELECT 1 FROM routing
                               WHERE updated_at >= :t AND status IN ('done', 'proposed')""", p))
     raise ValueError(f"unknown job {job!r}; expected one of {JOBS}")
