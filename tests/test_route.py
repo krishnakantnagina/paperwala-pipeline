@@ -186,3 +186,29 @@ def test_moves_are_held_until_the_site_review_table_exists(dbs):
     s = route_job.run(st, live, drive, ai, 10, 5, log=lambda *_: None)
     assert s.waiting_site == 1 and s.filled == 2
     assert st.execute("SELECT status FROM routing")[0]["status"] == "waiting"
+
+
+def test_shards_split_the_work_with_no_overlap_and_no_gap(dbs):
+    import string
+    st, _ = dbs
+    route_job.ensure_table(st)
+    ids = [f"ID{c}{d}_xxxxxxxxxxxxxxxxxx" for c in string.ascii_letters + string.digits + "-_"
+           for d in "ab"]
+    for i, pid in enumerate(ids):
+        st.execute("""INSERT INTO papers (drive_id, catalog, stage, status, report_ref, updated_at)
+                      VALUES (:d, 'c', 'approved', 'ready', 'R', :u)""", {"d": pid, "u": i})
+    for catalog in ("", "c", "other"):
+        everything = {p["drive_id"] for p in route_job._todo(st, 10_000, catalog=catalog)}
+        parts = [{p["drive_id"] for p in route_job._todo(st, 10_000, catalog=catalog, shard=(i, 4))}
+                 for i in range(4)]
+        assert set().union(*parts) == everything
+        assert sum(len(x) for x in parts) == len(everything)      # no paper in two slices
+        if catalog != "other":
+            assert all(len(x) > 0 for x in parts)
+
+
+def test_shard_text_is_checked():
+    assert route_job.parse_shard(None) == (0, 0) and route_job.parse_shard("2/6") == (2, 6)
+    for bad in ("6/6", "-1/3", "1/0", "x"):
+        with pytest.raises(ValueError):
+            route_job.parse_shard(bad)

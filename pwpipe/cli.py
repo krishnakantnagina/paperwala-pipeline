@@ -13,7 +13,7 @@
     python -m pwpipe publish [--limit N] [--max-minutes M]
     python -m pwpipe unpublish DRIVE_ID ... --reason TEXT
     python -m pwpipe sync            (site review queue <-> pipeline, both ways)
-    python -m pwpipe route [--limit N] [--max-minutes M]
+    python -m pwpipe route [--limit N] [--max-minutes M] [--shard i/n]
     python -m pwpipe next work|publish|route --since T --owner O   (exit 0 = run again now)
 
 ``--db`` defaults to Turso via PIPELINE_DB_URL / PIPELINE_DB_TOKEN.
@@ -195,13 +195,13 @@ def _route(args) -> int:
     from .db import connect_live
     from .drive import DriveClient
     from .route import AI
-    from .route_job import run
+    from .route_job import parse_shard, run
 
     state_db = connect(args.db)
     ai = AI.from_env(shared=state_db)
     print(f"AI keys: groq {len(ai.groq)}, gemini {len(ai.gemini)}", flush=True)
     stats = run(state_db, connect_live(), DriveClient.from_env(), ai, args.limit,
-                args.max_minutes, log=lambda m: print(m, flush=True))
+                args.max_minutes, log=lambda m: print(m, flush=True), shard=parse_shard(args.shard))
     print(json.dumps(asdict(stats), indent=2))
     return 0
 
@@ -303,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     ro.add_argument("--db")
     ro.add_argument("--limit", type=int, default=1500)
     ro.add_argument("--max-minutes", type=float, default=150)
+    ro.add_argument("--shard", help="i/n: this worker is number i (from 0) of n; each takes its own slice of papers")
     ro.set_defaults(func=_route)
 
     nx = sub.add_parser("next", help="exit 0 if a job should start its next run now")

@@ -13,8 +13,11 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: "Most papers to check in this run"
-        default: "300"
+        description: "Most papers to check in this run, across all workers"
+        default: "6000"
+      workers:
+        description: "Parallel workers"
+        default: "6"
 
 permissions:
   contents: read
@@ -24,14 +27,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      since: ${{ steps.p.outputs.since }}
+      shards: ${{ steps.p.outputs.shards }}
+      n: ${{ steps.p.outputs.n }}
+      per_worker: ${{ steps.p.outputs.per_worker }}
+    steps:
+      - id: p
+        run: |
+          n=${{ inputs.workers || '6' }}; limit=${{ inputs.limit || '6000' }}
+          echo "since=$(date +%s)" >> "$GITHUB_OUTPUT"
+          echo "n=$n" >> "$GITHUB_OUTPUT"
+          echo "shards=$(python3 -c "print(list(range($n)))")" >> "$GITHUB_OUTPUT"
+          echo "per_worker=$(( (limit + n - 1) / n ))" >> "$GITHUB_OUTPUT"
+
   route:
+    needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 170
-    outputs:
-      since: ${{ steps.t.outputs.since }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
-      - id: t
-        run: echo "since=$(date +%s)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -56,10 +77,10 @@ jobs:
           GROQ_API_KEY_3: ${{ secrets.GROQ_API_KEY_3 }}
           GROQ_API_KEY_4: ${{ secrets.GROQ_API_KEY_4 }}
           GROQ_API_KEY_5: ${{ secrets.GROQ_API_KEY_5 }}
-        run: python -m pwpipe route --limit ${{ inputs.limit || '1500' }} --max-minutes 150
+        run: python -m pwpipe route --limit ${{ needs.plan.outputs.per_worker }} --max-minutes 150 --shard "${{ matrix.shard }}/${{ needs.plan.outputs.n }}"
 
   next:
-    needs: route
+    needs: [plan, route]
     if: ${{ !cancelled() && needs.route.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -80,6 +101,6 @@ jobs:
           PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
           PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}
         run: |
-          if python -m pwpipe next route --since "${{ needs.route.outputs.since }}" --owner route; then
-            bash scripts/start_run.sh route.yml -f limit=1500
+          if python -m pwpipe next route --since "${{ needs.plan.outputs.since }}" --owner route; then
+            bash scripts/start_run.sh route.yml -f limit=6000 -f workers=6
           fi

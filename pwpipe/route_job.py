@@ -70,17 +70,34 @@ def route_catalog() -> str:
     return os.environ.get("ROUTE_CATALOG", "").strip()
 
 
-def _todo(db: Db, limit: int, catalog: str | None = None) -> list[dict]:
+def parse_shard(text: str | None) -> tuple[int, int]:
+    """'2/6' -> (2, 6): worker 2 of 6 (0-based). None or '' -> (0, 0), meaning no sharding."""
+    if not text:
+        return 0, 0
+    i, n = (int(x) for x in text.split("/"))
+    if n < 1 or not 0 <= i < n:
+        raise ValueError(f"bad shard {text!r}: want i/n with 0 <= i < n")
+    return i, n
+
+
+# Each worker takes the papers whose id lands in its slice, so two workers never
+# touch the same paper and no lease is needed. Drive ids end in base64 characters.
+SHARD_SQL = "(:sn = 0 OR ((unicode(substr(p.drive_id, -1)) + unicode(substr(p.drive_id, -2, 1))) % :sn) = :si)"
+
+
+def _todo(db: Db, limit: int, catalog: str | None = None, shard: tuple[int, int] = (0, 0)) -> list[dict]:
     catalog = route_catalog() if catalog is None else catalog
+    si, sn = shard
     return db.execute(
-        """SELECT p.* FROM papers p LEFT JOIN routing r ON r.drive_id = p.drive_id
+        f"""SELECT p.* FROM papers p LEFT JOIN routing r ON r.drive_id = p.drive_id
            WHERE p.report_ref IS NOT NULL
              AND p.stage IN ('approved', 'published', 'live_verified')
              AND (:c = '' OR p.catalog = :c)
+             AND {SHARD_SQL}
              AND (r.drive_id IS NULL OR r.status = 'waiting'
                 OR (r.status = 'error' AND r.attempts < :m))
            ORDER BY p.updated_at LIMIT :n""",
-        {"m": MAX_ATTEMPTS, "n": limit, "c": catalog})
+        {"m": MAX_ATTEMPTS, "n": limit, "c": catalog, "si": si, "sn": sn})
 
 
 def _record(db: Db, drive_id: str, status: str, result: dict) -> None:
@@ -261,7 +278,7 @@ def placement_outcome(live: Db, paper: dict, pyq: dict, subject: dict, header: s
 
 
 def run(state_db: Db, live: Db, drive, ai: AI | None, limit: int, max_minutes: float,
-        log=print, flags: Flags | None = None) -> RouteStats:
+        log=print, flags: Flags | None = None, shard: tuple[int, int] = (0, 0)) -> RouteStats:
     state.migrate(state_db)
     ensure_table(state_db)
     stats = RouteStats()
@@ -277,7 +294,7 @@ def run(state_db: Db, live: Db, drive, ai: AI | None, limit: int, max_minutes: f
     can_propose = tables_ready(live)
     if not can_propose:
         log("site review table not deployed yet: filling details, holding back move proposals")
-    for paper in _todo(state_db, limit):
+    for paper in _todo(state_db, limit, shard=shard):
         if time.monotonic() > deadline:
             break
         pid = paper["drive_id"]
