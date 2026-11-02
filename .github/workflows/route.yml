@@ -67,6 +67,9 @@ jobs:
           # /admin/review. HIDE_UNSORTED stays off: nothing leaves the site without a person.
           ROUTE_PLACEMENT: "1"
           ROUTE_AUTO_MOVE: "1"
+          # Owner 2026-11-02: papers whose header cannot be read are taken off the site for now
+          # (kept in unsorted_papers, restorable) and looked at later.
+          ROUTE_HIDE_UNVERIFIED: "1"
           PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
           PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}

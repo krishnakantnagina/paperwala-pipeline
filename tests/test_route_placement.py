@@ -118,6 +118,21 @@ def test_hiding_keeps_the_row_in_unsorted_papers_and_takes_it_off_the_site(tmp_p
     assert "XX-999" in row["header_text"] and row["drive_link"].endswith("/view")
 
 
+def test_unverified_paper_is_hidden_only_when_asked_and_kept_in_unsorted_papers(tmp_path):
+    st, live = make(tmp_path)
+    live.execute("UPDATE pyq_papers SET subject_id = 10")
+    s = run(st, live, "Nothing Useful Here")
+    assert (s.unverified, s.hidden) == (1, 0)
+    assert live.execute("SELECT COUNT(*) AS n FROM pyq_papers")[0]["n"] == 1
+    (tmp_path / "b").mkdir()
+    st2, live2 = make(tmp_path / "b")
+    live2.execute("UPDATE pyq_papers SET subject_id = 10")
+    s = run(st2, live2, "Nothing Useful Here", hide_unverified=True)
+    assert (s.unverified, s.hidden) == (1, 1)
+    assert live2.execute("SELECT COUNT(*) AS n FROM pyq_papers")[0]["n"] == 0
+    assert live2.execute("SELECT COUNT(*) AS n FROM unsorted_papers")[0]["n"] == 1
+
+
 def test_hiding_needs_the_unsorted_table_else_it_falls_back_to_review(tmp_path):
     st, live = make(tmp_path, unsorted=False)
     live.execute("UPDATE pyq_papers SET subject_id = 10")

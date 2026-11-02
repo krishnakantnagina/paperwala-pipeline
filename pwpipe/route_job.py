@@ -47,16 +47,18 @@ class Flags:
     ROUTE_PLACEMENT=1       use the header-based placement engine (pwpipe/placement.py)
     ROUTE_AUTO_MOVE=1       apply a `move` decision (one subject the header names exactly) without a person
     ROUTE_HIDE_UNSORTED=1   take a paper that cannot be placed off the public site (kept in unsorted_papers)
+    ROUTE_HIDE_UNVERIFIED=1 same for a paper whose header says nothing to compare (kept in unsorted_papers, reason no_evidence ...)
     Without the last two, every outcome that would change a page is a proposal in /admin/review."""
     placement: bool = False
     auto_move: bool = False
     hide_unsorted: bool = False
+    hide_unverified: bool = False
 
     @classmethod
     def from_env(cls) -> "Flags":
         def on(k):
             return os.environ.get(k, "") == "1"
-        return cls(on("ROUTE_PLACEMENT"), on("ROUTE_AUTO_MOVE"), on("ROUTE_HIDE_UNSORTED"))
+        return cls(on("ROUTE_PLACEMENT"), on("ROUTE_AUTO_MOVE"), on("ROUTE_HIDE_UNSORTED"), on("ROUTE_HIDE_UNVERIFIED"))
 
 
 def ensure_table(db: Db) -> None:
@@ -250,6 +252,10 @@ def placement_outcome(live: Db, paper: dict, pyq: dict, subject: dict, header: s
     place = placement.decide(header, filed, cat, ocr=True)
     if place.kind == "unverified":
         stats.unverified += 1
+        if flags.hide_unverified and can_hide:
+            stats.hidden += hide_paper(live, pyq, subject, place, header)
+            return {"placement": "unverified", "reason": place.reason, "fills": {}, "notes": place.notes,
+                    "status": "done", "hidden": True}
         return None
     fills = plan_paper(header, pyq, subject, cands.get(subject["university"], subject["program"]), None).fills
     stats.filled += apply_fills(live, pyq["id"], fills) if fills else 0
@@ -286,7 +292,7 @@ def run(state_db: Db, live: Db, drive, ai: AI | None, limit: int, max_minutes: f
     cands = Candidates(live)
     flags = flags or Flags.from_env()
     catalogs = Catalogs(live)
-    can_hide = flags.hide_unsorted and unsorted_ready(live)
+    can_hide = (flags.hide_unsorted or flags.hide_unverified) and unsorted_ready(live)
     index = LinkIndex(live)
     workdir = Path(tempfile.mkdtemp(prefix="pwroute-"))
     ai_out = False
