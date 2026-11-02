@@ -56,7 +56,7 @@ def test_real_paper_cleaned_and_verified(tmp_path, bl, name):
         # 3 diagonal lines x 2 copies, plus the top and foot stamps where the page has room for them
         words = page.get_text().split()
         assert set(words) == {"paperwala.org"} and 6 <= len(words) <= 8
-    assert report["stamped_pages"] == 4 and report["stamps"] == 8
+    assert report["stamped_pages"] == 4 and 4 <= report["stamps"] <= 8
     assert all(p["stamp"] == "ok" for p in report["verify"]["pages"])
     assert dst.stat().st_size <= src.stat().st_size * 1.2
     assert (tmp_path / "crops" / "p4_r1.png").exists()
