@@ -192,7 +192,7 @@ def test_shards_split_the_work_with_no_overlap_and_no_gap(dbs):
     import string
     st, _ = dbs
     route_job.ensure_table(st)
-    ids = [f"ID{c}{d}_xxxxxxxxxxxxxxxxxx" for c in string.ascii_letters + string.digits + "-_"
+    ids = [f"ID_xxxxxxxxxxxxxxxxxx{c}{d}" for c in string.ascii_letters + string.digits + "-_"
            for d in "ab"]
     for i, pid in enumerate(ids):
         st.execute("""INSERT INTO papers (drive_id, catalog, stage, status, report_ref, updated_at)
