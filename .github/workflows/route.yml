@@ -62,6 +62,11 @@ jobs:
       - name: Route
         env:
           ROUTE_CATALOG: ${{ vars.WORK_CATALOG }}
+          # Header-based placement (pwpipe/placement.py): keep / move / review / unsorted.
+          # Moves with one exact subject are applied; anything unclear is a proposal in
+          # /admin/review. HIDE_UNSORTED stays off: nothing leaves the site without a person.
+          ROUTE_PLACEMENT: "1"
+          ROUTE_AUTO_MOVE: "1"
           PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
           PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}
           GDRIVE_OAUTH_JSON: ${{ secrets.GDRIVE_OAUTH_JSON }}
