@@ -94,7 +94,8 @@ jobs:
           # The daily health check rides on this chain too.
           last=$(gh run list --workflow health.yml --limit 1 --json createdAt --jq '.[0].createdAt // ""')
           if [ -z "$last" ] || [ $(( $(date +%s) - $(date -d "$last" +%s) )) -gt 82800 ]; then
-            bash scripts/start_run.sh health.yml
+            # A switched-off health workflow must not stop the publish chain.
+            bash scripts/start_run.sh health.yml || echo "health check not started"
           fi
           # A failed run (site down, Drive error) is never progress: it waits
           # out the two hours like an idle one, so a fault cannot loop.
