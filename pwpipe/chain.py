@@ -42,8 +42,10 @@ def left_and_moved(db: Db, job: str, since: int, owner: str) -> tuple[int, int]:
                               WHERE at >= :t AND owner LIKE :o
                                 AND to_stage IN ('staged', 'approved')""", p))
     if job == "publish":
+        from .publish import publish_catalog
         return (_count(db, """SELECT 1 FROM papers
-                              WHERE stage = 'approved' AND status IN ('ready', 'leased')"""),
+                              WHERE stage = 'approved' AND status IN ('ready', 'leased')
+                                AND (:c = '' OR catalog = :c)""", {"c": publish_catalog()}),
                 _count(db, """SELECT 1 FROM events
                               WHERE at >= :t AND owner LIKE :o AND status = 'done'""", p))
     if job == "route":

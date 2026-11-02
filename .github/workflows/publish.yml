@@ -64,6 +64,7 @@ jobs:
           LIVE_DB_URL: ${{ secrets.LIVE_DB_URL }}
           LIVE_DB_TOKEN: ${{ secrets.LIVE_DB_TOKEN }}
           SITE_URL: https://paperwala.org
+          PUBLISH_CATALOG: ${{ vars.WORK_CATALOG }}
         run: python -m pwpipe publish --limit ${{ inputs.limit || '2000' }} --max-minutes 100
 
   next:
@@ -83,6 +84,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - name: Start the next runs
         env:
+          PUBLISH_CATALOG: ${{ vars.WORK_CATALOG }}
           GH_TOKEN: ${{ github.token }}
           PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
           PIPELINE_DB_TOKEN: ${{ secrets.PIPELINE_DB_TOKEN }}

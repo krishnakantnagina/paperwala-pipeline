@@ -18,6 +18,7 @@ After each batch the site itself must still answer, or the run stops.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.error
@@ -214,7 +215,8 @@ def run(state_db: Db, live: Db, drive: DriveClient, site_url: str, limit: int,
         raise PublishStop(f"site {site_url} does not answer; nothing published")
     done = 0
     while done < limit and time.monotonic() < deadline:
-        batch = state.claim(state_db, "approved", owner, min(BATCH, limit - done))
+        batch = state.claim(state_db, "approved", owner, min(BATCH, limit - done),
+                            catalog=publish_catalog() or None)
         if not batch:
             break
         done += len(batch)
@@ -232,6 +234,12 @@ def run(state_db: Db, live: Db, drive: DriveClient, site_url: str, limit: int,
             raise PublishStop(f"site {site_url} stopped answering after a batch")
         state.heartbeat(state_db, "publish")
     return stats
+
+
+def publish_catalog() -> str:
+    """The one catalog to publish (env PUBLISH_CATALOG), or '' for every catalog. The workflow sets it
+    from the repo variable WORK_CATALOG, so a run cannot publish a catalog nobody has worked on yet."""
+    return os.environ.get("PUBLISH_CATALOG", "").strip()
 
 
 def unpublish(state_db: Db, live: Db, drive_ids: list[str], actor: str, reason: str,
