@@ -79,6 +79,14 @@ def find_domains(text: str, explicit_only: bool = False) -> list[str]:
     return out
 
 
+_OCR_FOLD = str.maketrans({"i": "l", "1": "l", "j": "l", "0": "o"})
+
+
+def _ocr_fold(text: str) -> str:
+    """Fold letters OCR swaps inside small print: i/1/j -> l, 0 -> o, rn -> m, vv -> w."""
+    return text.replace("rn", "m").replace("vv", "w").translate(_OCR_FOLD)
+
+
 def _domain_label(domain: str) -> str:
     return domain.removeprefix("www.").split(".")[0]
 
@@ -141,9 +149,14 @@ def classify_line(text: str, bl: Blocklist) -> tuple[str | None, str]:
     # Dots rejoined across OCR spaces ("pyqonline .com"), then letters only,
     # keeping the dots: "www.pyqonline.com" -> "www.pyqonline.com".
     dotted = re.sub(r"[^a-z0-9.]", "", re.sub(r"\s*\.\s*", ".", lowered))
-    fuzzy = None
+    # Letters OCR confuses, folded together ("aktuoniine" for aktuonline: a URL printed small
+    # inside a 2024-25 AKTU question table). Used only after "www", so a word in a sentence never matches.
+    compact_ocr = _ocr_fold(compact)
+    fuzzy, fuzzy_www = None, False
     for domain in bl.domains:
         label = _domain_label(domain)
+        if fuzzy is None and len(label) >= 8 and "www" + _ocr_fold(re.sub(r"[^a-z0-9]", "", label)) in compact_ocr:
+            fuzzy, fuzzy_www = domain, True
         # The label must carry "www" or a dot + TLD. Not just a TLD after it:
         # "AKU Bihar in 2019" squeezes to "akubiharin" and "Assam Board in"
         # to "assamboardin" - board names are printed on their own papers.
@@ -157,6 +170,10 @@ def classify_line(text: str, bl: Blocklist) -> tuple[str | None, str]:
                 re.search(rf"{label}(?:com|corn|con|cam)$", compact)
                 or re.search(rf"{re.escape(label[1:])}\.(?:com|corn|con|cam)", dotted)):
             fuzzy = domain
+    if fuzzy and fuzzy_www:
+        # Anchored on "www", so it is a URL: "domain:" lets only its words go (OCR joins this URL
+        # to the question beside it: "influencing it. https://www.aktuonline.com").
+        return AD, f"domain:{fuzzy}"
     if fuzzy:
         return AD, f"domain~:{fuzzy}"
 

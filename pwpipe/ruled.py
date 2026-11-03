@@ -17,7 +17,7 @@ from PIL import Image
 
 from .blocklist import Blocklist
 from .detect import AD, OcrLine, classify_lines
-from .ocr import DEFAULT_LANGS, group_lines, ocr_image
+from .ocr import DEFAULT_LANGS, OcrError, group_lines, ocr_image
 
 RULE_MIN = 0.12        # a dark horizontal run this long (of page width) is a rule
 INK_LEVEL = 128
@@ -71,8 +71,18 @@ def struck_through_ads(img: Image.Image, bl: Blocklist,
     clean = Image.fromarray(np.where(mask, 255, gray).astype(np.uint8))
     found = []
     for y0, y1 in ((int(a), int(b)) for a, b in strips):
-        words = [replace(w, y0=w.y0 + y0, y1=w.y1 + y0)
-                 for w in ocr_image(clean.crop((0, y0, clean.width, y1)), langs, psm=11)]
+        strip = clean.crop((0, y0, clean.width, y1))
+        try:
+            raw = ocr_image(strip, langs, psm=11)
+        except OcrError:
+            # Tesseract 5.5 segfaults (exit 139, no message) on some near-empty strips with hin+eng and
+            # psm 11 (AKTU sample 2026-11-04, 1KQkHo5s...). A URL is Latin script, so English reads it
+            # just as well; a strip neither can read is skipped - the page keeps its first reading.
+            try:
+                raw = ocr_image(strip, "eng", psm=11)
+            except OcrError:
+                continue
+        words = [replace(w, y0=w.y0 + y0, y1=w.y1 + y0) for w in raw]
         found += [l for l in classify_lines(group_lines(words), bl)
                   if l.kind == AD and l.reason.startswith("domain:")]
     return found

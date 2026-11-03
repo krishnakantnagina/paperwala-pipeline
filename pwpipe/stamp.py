@@ -93,7 +93,21 @@ def draw_stamp(page, rect) -> None:
         width = pymupdf.get_text_length(STAMP_TEXT, fontname="helv", fontsize=size)
     x = rect.x0 + (rect.width - width) / 2
     y = rect.y1 - rect.height * 0.22
-    page.insert_text((x, y), STAMP_TEXT, fontsize=size, fontname="helv", color=STAMP_COLOR)
+    pt, rotate = _upright(page, pymupdf.Point(x, y))
+    page.insert_text(pt, STAMP_TEXT, fontsize=size, fontname="helv", color=STAMP_COLOR, rotate=rotate)
+
+
+def _upright(page, pt):
+    """``pt`` given as the reader sees the page, as (point, rotate) for ``insert_text``.
+
+    ``page.rect`` and the rendered raster the boxes come from are the page as displayed, but
+    ``insert_text`` writes in unrotated PDF space. On a /Rotate 90/270 page (AKTU scans saved
+    sideways, 3 of 54 in the 2026-11-04 sample) the marks landed sideways or off the page, the
+    pixel check failed and the paper went to review. Derotating the point and turning the text
+    by the page's own rotation puts it where it was planned, reading upright."""
+    if not page.rotation:
+        return pt, 0
+    return pt * page.derotation_matrix, page.rotation
 
 
 # Tiled diagonal mark: 3 parallel lines at 25 degrees that cut the page into 4 bands,
@@ -155,10 +169,10 @@ def draw_diagonal_marks(page, text: str = DIAG_TEXT, size: float = DIAG_SIZE,
         for frac in (0.3, 0.7):
             t = t0 + (t1 - t0) * frac
             # text starts half its width back along the line, so it is centred on t
-            pt = pymupdf.Point(lx + (t - width / 2) * ux, ly + (t - width / 2) * uy)
+            pt, rotate = _upright(page, pymupdf.Point(lx + (t - width / 2) * ux, ly + (t - width / 2) * uy))
             page.insert_text(pt, text, fontsize=size, fontname="helv",
                              color=(DIAG_GREY,) * 3, fill_opacity=opacity,
-                             morph=(pt, pymupdf.Matrix(angle)))
+                             morph=(pt, pymupdf.Matrix(angle)), rotate=rotate)
 
 
 def add_diagonal_marks(path) -> int:
@@ -185,7 +199,10 @@ def add_diagonal_marks(path) -> int:
         found = sum(
             "".join(sp["text"] for sp in ln["spans"]).count(DIAG_TEXT)
             for p in check for b in p.get_text("dict")["blocks"] for ln in b.get("lines", ())
-            if abs(ln["dir"][1]) > 0.1)          # tilted text only; extraction may join two marks
+            # tilted text only (extraction may join two marks). Directions come back in unrotated
+            # space, so on a /Rotate 90 page the upright corner marks read as (0, 1): count only
+            # text that is off both axes.
+            if abs(ln["dir"][0]) > 0.1 and abs(ln["dir"][1]) > 0.1)
     finally:
         check.close()
     if found < pages * 6:
