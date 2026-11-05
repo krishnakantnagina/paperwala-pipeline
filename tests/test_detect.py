@@ -336,3 +336,15 @@ def test_plain_words_ending_dot_com_are_not_a_url_tail(bl):
     assert _label_tail_word("nline.com", labels) and _label_tail_word("ine.com", labels)
     assert not _label_tail_word("ab.com", labels) and not _label_tail_word("physics.com", labels)
     assert not _label_tail_word("line", labels)
+
+
+def test_lone_url_prefix_is_erased_and_the_page_goes_to_review(bl):
+    lines = questions(bl) + [line("https:/f", 2400, bl=bl, conf=18)]
+    plan = plan_page(PAGE, SIZE, lines, bl)
+    assert "url_fragment" in plan.review and plan.regions
+
+
+def test_prefix_at_the_end_of_a_question_line_is_erased_without_review(bl):
+    lines = questions(bl) + [line("detection of QPSK signal. https://www.", 2400, bl=bl)]
+    plan = plan_page(PAGE, SIZE, lines, bl)
+    assert plan.regions and "url_fragment" not in plan.review

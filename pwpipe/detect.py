@@ -28,7 +28,7 @@ from statistics import median
 from .blocklist import Blocklist
 from .ocr import Line
 from .pdf import PageInfo
-from .rules import AD, SUSPECT, WEAK, _domain_label, classify_line
+from .rules import AD, SUSPECT, WEAK, _URL_PREFIX_ALONE, _domain_label, classify_line
 
 LINE_GAP_FACTOR = 2.0       # max vertical gap between block lines, in line heights
 REAL_WORD_CONF = 50         # a word this confident is content unless proven ad
@@ -478,6 +478,10 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
         plan.review.append("suspect")
     if any(not r.safe for r in plan.regions):
         plan.review.append("conflict")
+    # A URL prefix alone on its line: the rest of the address may be printed where OCR cannot read it
+    # (a smudge over "nline.com"), so the prefix goes but a person looks at the page.
+    if any(l.reason == "domain:www" and _URL_PREFIX_ALONE.match(l.text) for l in lines):
+        plan.review.append("url_fragment")
     if info.rotation != 0 and not info.is_scan and plan.regions:
         plan.review.append("rotated_page")
     real_words = sum(len(l.real_words) for l in lines)
