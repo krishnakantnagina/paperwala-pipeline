@@ -72,3 +72,45 @@ def test_marks_land_upright_where_planned_on_a_rotated_page(tmp_path, rotation):
     assert rect.y0 - 2 <= ys.min() and ys.max() <= rect.y1 + 2
     assert xs.max() - xs.min() > 3 * (ys.max() - ys.min())
     assert add_diagonal_marks(path) >= 6
+
+
+# --- URL fragments left on a line (2026-11-05: 3 of 45 RGPV B.Tech sample papers kept one) ---
+
+@pytest.mark.parametrize("text", [
+    "https://www", "https://www.", "https:/www ", "http://", "https://", "www.",
+    "detection of QPSK signal. https://www.", "Q.4 explain the stages. https:/www",
+])
+def test_bare_url_prefix_is_an_ad_and_only_its_url_words_go(bl, text):
+    kind, reason = classify_line(text, bl)
+    assert kind == AD and reason.startswith("domain:")
+
+
+@pytest.mark.parametrize("text", ["nline.com", "https:// nline.com", "ine.com", "line.com"])
+def test_site_name_tail_alone_is_an_ad(bl, text):
+    # The smudged middle of a URL reaches OCR as only its last piece.
+    assert classify_line(text, bl)[0] == AD
+
+
+@pytest.mark.parametrize("text", [
+    "HTTP is a stateless protocol", "Explain how http: works", "Write the URL format http://host/path",
+    "The www stands for world wide web", "Define www", "line.comparison", "in line.",
+    "Explain https://www.python.org usage",
+])
+def test_prose_about_urls_is_not_touched_by_the_prefix_rule(bl, text):
+    kind, reason = classify_line(text, bl)
+    assert reason != "domain:urlprefix" and not (kind == AD and reason == "domain:www")
+
+
+@pytest.mark.parametrize("text", ["detection of QPSK signal. https:/iwww", "hUps:/fwww", "https://wwww."])
+def test_ocr_garbled_url_prefix_is_an_ad(bl, text):
+    assert classify_line(text, bl)[0] == AD
+
+
+@pytest.mark.parametrize("text", ["https:/f", "https:/", "https://"])
+def test_lone_garbled_prefix_is_an_ad(bl, text):
+    assert classify_line(text, bl)[0] == AD
+
+
+@pytest.mark.parametrize("text", ["Note: /", "Ratio a:/b", "see: /", "Write the URL scheme http://"])
+def test_lone_prefix_rule_leaves_ordinary_text_alone(bl, text):
+    assert classify_line(text, bl)[0] != AD or text.endswith("http://")

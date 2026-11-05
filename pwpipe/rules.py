@@ -33,6 +33,13 @@ _DOMAIN_RE = re.compile(
     r"(?:https?://)?((?:[a-z0-9-]*[a-z][a-z0-9-]*\.)+"
     r"(?:com|in|net|org|info|online|co|xyz|site|io|me|app|live|tech|edu|gov|nic|ac|res))\b"
 )
+# The front of a URL whose domain is gone: the domain was erased (or wrapped to the next line) and
+# "https://www" is what is left on the page. Only at the end of a line, so "http://host/path" in a
+# question is untouched; a bare "http://" or "www." must be the whole line (a question can end in one).
+_URL_PREFIX_END = re.compile(r"(?:^|\s)h[a-z]{2,3}s?\s*:\s*/+\s*[a-z]?w{2,4}\s*\.?\s*$", re.I)   # OCR: "https:/iwww"
+_URL_PREFIX_ALONE = re.compile(r"^\s*(?:h[a-z]{2,3}s?\s*:\s*/+\s*[a-z]?|www\s*\.|h[a-z]{2,3}s?\s*:\s*/+\s*[a-z]?w{2,4}\s*\.?)\s*$", re.I)
+# The last piece of a URL whose middle was smudged: "nline.com", alone on its line.
+_TAIL_ALONE = re.compile(r"^\s*(?:https?\s*:\s*/+\s*)?([a-z0-9-]{3,})\s*\.\s*(?:com|corn|in|net|org|co)\s*$", re.I)
 _NON_KEY = re.compile(r"[^0-9a-zऀ-ॿ]+")
 LINE_MATCH_RATIO = 0.85
 
@@ -188,6 +195,14 @@ def classify_line(text: str, bl: Blocklist) -> tuple[str | None, str]:
     phones = find_phones(text)
     if phones and keyword:
         return AD, f"phone+keyword:{keyword}"
+
+    if _URL_PREFIX_END.search(text) or _URL_PREFIX_ALONE.match(text):
+        return AD, "domain:www"
+    tail = _TAIL_ALONE.match(text)
+    if tail:
+        stem = re.sub(r"[^a-z0-9]", "", tail.group(1).lower())
+        if any(len(_domain_label(d)) >= 6 and _domain_label(d).endswith(stem) for d in bl.domains):
+            return AD, f"domain:{stem}.com"
 
     unknown = [d for d in find_domains(text, explicit_only=True)
                if not domain_allowed(d, bl) and _plausible_domain(d, text)]
