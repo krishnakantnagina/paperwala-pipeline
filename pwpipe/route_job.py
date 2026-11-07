@@ -191,7 +191,7 @@ class Catalogs:
         if university not in self.cache:
             try:
                 rows = self.live.execute(
-                    "SELECT id, program, branch, semester, code, name, scheme FROM subjects WHERE university = :u",
+                    "SELECT id, program, branch, semester, code, name, scheme, aliases FROM subjects WHERE university = :u",
                     {"u": university})
             except Exception:       # a site that has not run migration 0010 yet has no scheme column
                 rows = [dict(r, scheme="") for r in self.live.execute(
@@ -199,7 +199,7 @@ class Catalogs:
                     {"u": university})]
             self.cache[university] = placement.Catalog([
                 placement.Subject(r["id"], r["program"] or "", r["branch"] or "", r["semester"] or 0,
-                                  r["code"] or "", r["name"] or "", r.get("scheme") or "") for r in rows])
+                                  r["code"] or "", r["name"] or "", r.get("scheme") or "", r.get("aliases") or "") for r in rows])
         return self.cache[university]
 
 

@@ -273,10 +273,16 @@ class Subject:
     code: str
     name: str
     scheme: str = ""
+    aliases: str = ""           # the site's comma-separated alternate codes/names (a corrected code keeps its old one here)
 
     @property
     def key(self) -> str:
         return code_key(self.code)
+
+    @property
+    def alias_keys(self) -> set[str]:
+        """Code keys among the aliases: "CO-303" after the row's code became "CS-303"."""
+        return {k for k in (code_key(a) for a in self.aliases.split(",")) if re.fullmatch(r"[A-Z]{1,6}\d{3,4}[A-Z]?", k)}
 
 
 class Catalog:
@@ -286,12 +292,17 @@ class Catalog:
     def __init__(self, subjects: list[Subject]):
         self.by_id = {s.id: s for s in subjects}
         self.by_code: dict[tuple[str, str], list[Subject]] = {}
+        self.by_alias: dict[tuple[str, str], list[Subject]] = {}
         for s in subjects:
             if s.key:
                 self.by_code.setdefault((s.program, s.key), []).append(s)
+        for s in subjects:      # an alias code finds the subject only where no row has that code itself
+            for k in s.alias_keys:
+                if k != s.key and (s.program, k) not in self.by_code:
+                    self.by_alias.setdefault((s.program, k), []).append(s)
 
     def with_code(self, program: str, key: str) -> list[Subject]:
-        found = self.by_code.get((program, key), [])
+        found = self.by_code.get((program, key), []) or self.by_alias.get((program, key), [])
         if not found:
             m = re.fullmatch(r"[A-Z]{2,6}(\d{3,4})", key)
             if m:           # the site stores "703" where the paper prints "MAM-703"

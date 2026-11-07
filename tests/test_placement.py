@@ -291,3 +291,17 @@ def test_slash_list_of_codes_includes_the_filed_one():
     s = subj(1, "B.Tech", 3, "CI-304", "Digital Systems", "AICTE")
     other = subj(2, "B.Tech", 3, "CY-304", "Something Else", "AICTE")
     assert P.decide(text, s, cat(s, other)).kind == "keep"
+
+
+def test_a_corrected_code_still_finds_its_subject_by_the_old_one():
+    """CSE Data Structures was CO-303 and is now CS-303 with CO-303 kept as an alias: a paper that
+    still prints CO-303 must find it, not fall through to name matching."""
+    from pwpipe import placement
+    cse = placement.Subject(209, "B.Tech", "CSE", 3, "CS-303", "Data Structures", "AICTE", aliases="CO-303")
+    other = placement.Subject(2, "B.Tech", "IT", 3, "IT-303", "Data Structure", "AICTE")
+    cat = placement.Catalog([cse, other])
+    assert cat.with_code("B.Tech", "CO303") == [cse]
+    assert cat.with_code("B.Tech", "CS303") == [cse]
+    # a code some other row owns is never taken over by an alias
+    clash = placement.Subject(3, "B.Tech", "CSE", 3, "CO-303", "Something Else", "AICTE")
+    assert placement.Catalog([cse, clash]).with_code("B.Tech", "CO303") == [clash]
