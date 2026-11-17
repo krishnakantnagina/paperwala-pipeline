@@ -495,3 +495,133 @@ def plan_page(info: PageInfo, raster_size: tuple[int, int], lines: list[OcrLine]
             plan.drop = True
             plan.review.append("drop_page")
     return plan
+
+
+TAIL_REACH = 3.5      # how far right of a URL box its torn-off ".com" can end, in box heights
+TAIL_GAP = 0.6        # widest blank gap inside that tail, in box heights
+TAIL_DARK = 150       # grey level below which a pixel counts as ink
+
+
+def extend_url_tails(plan: "PagePlan", image) -> int:
+    """Stretch each URL box to the right over ink that touches it, so a ".com" the OCR did not read
+    as its own word is erased with the rest of the address (Strength of Materials: the box ended
+    before ".com" and the page kept "com" beside the roll number grid). Ruled lines are ignored:
+    a row that is dark across most of the strip is a rule, and a column that is dark top to bottom
+    is a grid line, which ends the tail. Only URL-word regions are touched. Returns boxes grown."""
+    import numpy as np
+    grown = 0
+    gray = np.asarray(image.convert("L"))
+    height, width = gray.shape
+    solid = [b for l in plan.lines for t, c, b in l.words if c >= 50 and sum(ch.isalnum() for ch in t) >= 2]
+    for region in plan.regions:
+        if region.kind != "words" or not all(r.startswith("domain:") for r in region.reasons):
+            continue
+        new = []
+        for x0, y0, x1, y1 in region.boxes:
+            h = max(1, y1 - y0)
+            reach = min(width, x1 + int(TAIL_REACH * h))
+            # Never over a word the page reading read well: that is paper text, not an address.
+            ahead = [b[0] for b in solid if b[0] >= x1 - 2 and b[1] < y1 and b[3] > y0]
+            if ahead:
+                reach = min(reach, min(ahead))
+            if reach - x1 < 4 or y1 <= y0:
+                new.append((x0, y0, x1, y1))
+                continue
+            ink = gray[y0:y1, x1:reach] < TAIL_DARK
+            ink = ink[~(ink.mean(axis=1) > 0.8)]          # rows that are rules across the strip
+            if ink.shape[0] < 3:
+                new.append((x0, y0, x1, y1))
+                continue
+            cols = ink.any(axis=0)
+            vertical = ink.mean(axis=0) > 0.9               # grid lines
+            gap_max = max(4, int(TAIL_GAP * h))
+            end, gap, seen = 0, 0, False
+            for i, c in enumerate(cols):
+                if vertical[i]:
+                    break
+                if c:
+                    end, gap, seen = i + 1, 0, True
+                else:
+                    gap += 1
+                    if gap > gap_max or (not seen and gap > gap_max // 2):
+                        break
+            if seen and end:
+                new.append((x0, y0, min(width, x1 + end + 2), y1))
+                grown += 1
+            else:
+                new.append((x0, y0, x1, y1))
+        region.boxes = new
+        region.bbox = _union(new)
+    return grown
+
+
+BAND_FRACTION = 0.12     # top and bottom strip of a page read a second time, enlarged
+BAND_MIN_CHARS = 6       # shortest fragment of a site name that counts
+BAND_MATCH = 0.85        # how close a read fragment must be to part of a site name
+
+
+# Words that sit inside many blocked site names ("questionpapers", "subjectnotes") but are also plain
+# text on a paper. A fragment that holds one of them is never taken for a hidden address.
+_COMMON_IN_NAMES = ("subject", "paper", "question", "exam", "study", "notes", "online", "previous",
+                    "year", "board", "class", "biology", "chemistry", "physics", "maths", "english",
+                    "hindi", "science", "social", "marks", "time", "roll", "section", "attempt",
+                    "answer", "following", "solution", "model", "sample", "unit", "semester")
+
+
+def _fragment_of_site_name(text: str, labels: list[str]) -> bool:
+    """A read word that is a piece of a blocked site's name ("Hptuon" for "uptuonline"). Only the
+    letters count, and the piece must be as long as BAND_MIN_CHARS and nearly equal to a stretch
+    of the name, so ordinary words of a heading do not match."""
+    from difflib import SequenceMatcher
+    word = re.sub(r"[^a-z]", "", text.lower())
+    if len(word) < BAND_MIN_CHARS:
+        return False
+    if any(w in word or (len(word) >= 4 and word in w) for w in _COMMON_IN_NAMES):
+        return False
+    for label in labels:
+        if len(label) < BAND_MIN_CHARS:
+            continue
+        n = len(word)
+        for i in range(0, max(1, len(label) - n + 1)):
+            if SequenceMatcher(None, word, label[i:i + n]).ratio() >= BAND_MATCH:
+                return True
+    return False
+
+
+def find_band_fragments(image, plan: "PagePlan", bl: Blocklist, langs: str = "eng") -> int:
+    """Second look at the top and bottom strips, where the sites print their address. A barcode or
+    a rule drawn through the address leaves the whole-page reading with nothing (Operations Research,
+    2007-08: "uptuonline.com" printed over the barcode, no line found), but a tall, enlarged read of
+    just the strip often returns a piece of the name. A piece found there becomes a URL box, which
+    ``extend_url_tails`` then stretches over the rest of the address. Strips already holding a
+    region are skipped. Returns boxes added."""
+    from .ocr import ocr_image
+    labels = [_domain_label(d) for d in bl.domains]
+    # Words the whole-page reading already read are ordinary text ("Paper" is part of several site
+    # names); only what that reading missed can be a hidden address.
+    known = {re.sub(r"[^a-z]", "", t.lower()) for l in plan.lines for t, c, _ in l.words if c >= 50}
+    # Words the whole-page reading read well; garbage over a barcode (conf 5) does not count.
+    seen_boxes = [b for l in plan.lines for _, c, b in l.words if c >= 50]
+    width, height = image.size
+    band_h = int(BAND_FRACTION * height)
+    added = 0
+    for y_off in (0, height - band_h):
+        strip = (0, y_off, width, y_off + band_h)
+        if any(_intersects(b, strip) for r in plan.regions for b in r.boxes):
+            continue
+        crop = image.crop(strip).convert("L")
+        big = crop.resize((crop.width * 2, crop.height * 2))
+        for w in ocr_image(big, langs, psm=11):
+            if (w.conf < 0 or re.sub(r"[^a-z]", "", w.text.lower()) in known
+                    or not _fragment_of_site_name(w.text, labels)):
+                continue
+            box = (w.x0 // 2, y_off + w.y0 // 2, w.x1 // 2, y_off + w.y1 // 2)
+            if any(_intersects(box, wb) for wb in seen_boxes):
+                continue             # a well-read word is here: not hidden
+            pad = max(4, (box[3] - box[1]) // 4)
+            box = (max(0, box[0] - pad), max(0, box[1] - pad),
+                   min(width, box[2] + pad), min(height, box[3] + pad))
+            plan.regions.append(Region(bbox=box, boxes=[box], lines=[w.text],
+                                       reasons=["domain:band-fragment"], kind="words"))
+            added += 1
+    return added

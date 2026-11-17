@@ -348,3 +348,47 @@ def test_prefix_at_the_end_of_a_question_line_is_erased_without_review(bl):
     lines = questions(bl) + [line("detection of QPSK signal. https://www.", 2400, bl=bl)]
     plan = plan_page(PAGE, SIZE, lines, bl)
     assert plan.regions and "url_fragment" not in plan.review
+
+
+def _url_plan(box):
+    from pwpipe.detect import PagePlan, Region
+    plan = PagePlan(number=0, mode="rebuild", raster_size=(400, 200), lines=[])
+    plan.regions.append(Region(bbox=box, boxes=[box], lines=["http://www.uptuonline"],
+                               reasons=["domain:uptuonline.com"], kind="words"))
+    return plan
+
+
+def test_url_box_grows_over_a_com_the_ocr_left_out():
+    from PIL import Image, ImageDraw
+    from pwpipe.detect import extend_url_tails
+    img = Image.new("L", (400, 200), 255)
+    d = ImageDraw.Draw(img)
+    d.rectangle((20, 50, 160, 70), fill=0)          # the URL words the box covers
+    d.rectangle((166, 52, 200, 70), fill=0)         # ".com" just to its right
+    d.line((0, 72, 400, 72), fill=0, width=2)       # a ruled line under the text
+    d.line((230, 40, 230, 200), fill=0, width=2)    # a grid line further right
+    plan = _url_plan((20, 48, 160, 72))
+    assert extend_url_tails(plan, img) == 1
+    x0, y0, x1, y1 = plan.regions[0].boxes[0]
+    assert 200 <= x1 < 225          # covers ".com", stops before the grid line
+
+
+def test_url_box_stays_when_nothing_touches_it():
+    from PIL import Image, ImageDraw
+    from pwpipe.detect import extend_url_tails
+    img = Image.new("L", (400, 200), 255)
+    ImageDraw.Draw(img).rectangle((20, 50, 159, 70), fill=0)
+    ImageDraw.Draw(img).rectangle((300, 50, 340, 70), fill=0)   # a far-away word is not part of it
+    plan = _url_plan((20, 48, 160, 72))
+    assert extend_url_tails(plan, img) == 0
+    assert plan.regions[0].boxes[0] == (20, 48, 160, 72)
+
+
+def test_a_damaged_piece_of_a_site_name_is_recognised_but_plain_words_are_not():
+    from pwpipe.detect import _fragment_of_site_name
+    labels = ["uptuonline", "aktuonline", "oldquestionpapers"]
+    assert _fragment_of_site_name("Hptuon", labels) or _fragment_of_site_name("uptuon", labels)
+    assert _fragment_of_site_name("aktuonl", labels)
+    assert not _fragment_of_site_name("Paper", labels)       # shorter than the minimum
+    assert not _fragment_of_site_name("Roll", labels)
+    assert not _fragment_of_site_name("Following", labels)
