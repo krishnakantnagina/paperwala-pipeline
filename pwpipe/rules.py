@@ -174,7 +174,7 @@ def classify_line(text: str, bl: Blocklist) -> tuple[str | None, str]:
         # Only for long, specific names on short lines, so a word inside a sentence never matches, and only
         # after every domain has had its exact try: "MPboardonline.com" is mpboardonline, not a bad apboardonline.
         if fuzzy is None and len(label) >= 9 and len(compact) <= 70 and (
-                re.search(rf"{label}(?:com|corn|con|cam)$", compact)
+                re.search(rf"{label}(?:com|corn|con|cam)[a-z]{{0,2}}$", compact)   # a stray letter after it ("... com T")
                 or re.search(rf"{re.escape(label[1:])}\.(?:com|corn|con|cam)", dotted)):
             fuzzy = domain
     if fuzzy and fuzzy_www:

@@ -576,15 +576,19 @@ def _fragment_of_site_name(text: str, labels: list[str]) -> bool:
     word = re.sub(r"[^a-z]", "", text.lower())
     if len(word) < BAND_MIN_CHARS:
         return False
-    if any(w in word or (len(word) >= 4 and word in w) for w in _COMMON_IN_NAMES):
+    ends_com = word.endswith("com") and len(word) - 3 >= BAND_MIN_CHARS    # an address, not a heading word
+    if not ends_com and any(w in word or (len(word) >= 4 and word in w) for w in _COMMON_IN_NAMES):
         return False
-    for label in labels:
-        if len(label) < BAND_MIN_CHARS:
-            continue
-        n = len(word)
-        for i in range(0, max(1, len(label) - n + 1)):
-            if SequenceMatcher(None, word, label[i:i + n]).ratio() >= BAND_MATCH:
-                return True
+    # A whole address read with its ending ("uptuonlingycom"): compare without the ending too.
+    forms = [word] + ([word[:-3]] if ends_com else [])
+    for form in forms:
+        for label in labels:
+            if len(label) < BAND_MIN_CHARS:
+                continue
+            n = len(form)
+            for i in range(0, max(1, len(label) - n + 1)):
+                if SequenceMatcher(None, form, label[i:i + n]).ratio() >= BAND_MATCH:
+                    return True
     return False
 
 
@@ -605,13 +609,21 @@ def find_band_fragments(image, plan: "PagePlan", bl: Blocklist, langs: str = "en
     width, height = image.size
     band_h = int(BAND_FRACTION * height)
     added = 0
-    for y_off in (0, height - band_h):
-        strip = (0, y_off, width, y_off + band_h)
+    thin_h = max(36, int(0.04 * height))
+    step = max(1, thin_h // 2)
+    # Each edge is read twice: the whole 12% strip for loose words (psm 11), and then in overlapping
+    # one-line windows (psm 7). A line read alone returns an address sitting on a rule line, where the
+    # wide read returns nothing (the window must be about one line tall, or the rule confuses it).
+    windows = [(0, band_h, 11), (height - band_h, band_h, 11)]
+    windows += [(y, thin_h, 7) for y in range(0, band_h - thin_h + 1, step)]
+    windows += [(height - thin_h - y, thin_h, 7) for y in range(0, band_h - thin_h + 1, step)]
+    for y_off, h_, psm in windows:
+        strip = (0, y_off, width, y_off + h_)
         if any(_intersects(b, strip) for r in plan.regions for b in r.boxes):
             continue
         crop = image.crop(strip).convert("L")
         big = crop.resize((crop.width * 2, crop.height * 2))
-        for w in ocr_image(big, langs, psm=11):
+        for w in ocr_image(big, "eng", psm=psm):   # addresses are Latin; adding Hindi changes what a one-line read returns
             if (w.conf < 0 or re.sub(r"[^a-z]", "", w.text.lower()) in known
                     or not _fragment_of_site_name(w.text, labels)):
                 continue
